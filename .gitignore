@@ -72,3 +72,7 @@ scripts/verify_*.js
 scripts/test_archives.js
 scripts/test_newfeat.js
 scripts/test_new_features.js
+
+# ========== 打包发行产物（exe / 第三方二进制勿入库） ==========
+release/NasManager.exe
+release/nssm.exe

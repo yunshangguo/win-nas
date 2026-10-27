@@ -2,9 +2,24 @@
 const fs = require('fs');
 const path = require('path');
 
+// pkg 单文件打包环境下，__dirname 指向只读虚拟快照（/snapshot/...），
+// 不能作为“安装目录”写入数据；数据目录 / 用户主目录 / .env 必须落在 exe 实际所在目录。
+// 故引入 BASE_DIR：pkg 用 process.execPath 所在目录，否则退回源码 __dirname。
+const IS_PKG = (typeof process.pkg !== 'undefined');
+const BASE_DIR = IS_PKG ? path.dirname(process.execPath) : __dirname;
+
 // ---- 读取 .env（极简，不引第三方依赖） ----
 function loadEnv() {
-  const envPath = path.join(__dirname, '.env');
+  const envPath = path.join(BASE_DIR, '.env');
+  if (!fs.existsSync(envPath)) {
+    if (IS_PKG) {
+      // 打包环境首次运行：从内嵌样板 (.env.example) 复制出一份可编辑的 .env
+      try {
+        const tpl = path.join(__dirname, '.env.example');
+        if (fs.existsSync(tpl)) fs.copyFileSync(tpl, envPath);
+      } catch (e) { /* 样板缺失则使用纯内置默认 */ }
+    }
+  }
   if (fs.existsSync(envPath)) {
     const txt = fs.readFileSync(envPath, 'utf8');
     for (const line of txt.split(/\r?\n/)) {
@@ -57,7 +72,7 @@ for (const part of rootsRaw.split(/[;,]/)) {
 // 用户个人主目录基地：每个账号在此基地下拥有 <基地>\<用户名> 独立空间。
 // 默认位于「项目安装目录」下的 home/（即 <项目>/home/<用户名>），与盘符彻底解耦，
 // 单 C 盘机器也能用；可用 .env 的 USER_HOME_BASE= 覆盖到任意目录。
-const USER_HOME_BASE = path.resolve(process.env.USER_HOME_BASE || path.join(__dirname, 'home'));
+const USER_HOME_BASE = path.resolve(process.env.USER_HOME_BASE || path.join(BASE_DIR, 'home'));
 console.log('[CONFIG] 用户个人主目录基地 USER_HOME_BASE = ' + USER_HOME_BASE);
 
 const PORT = parseInt(process.env.PORT || '8080', 10);

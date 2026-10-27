@@ -5,7 +5,17 @@
   "description": "Windows-native NAS-style file manager: TUS resumable upload, recycle-bin integration, system-drive guard, zip compress/extract with AES",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "pkg": "pkg server.js --output release/NasManager.exe --targets node22-win-x64"
+  },
+  "pkg": {
+    "assets": [
+      "public/**/*",
+      ".env.example",
+      "src/**/*.js",
+      "node_modules/@img/**/*"
+    ],
+    "compress": "Brotli"
   },
   "dependencies": {
     "@tus/file-store": "^1.5.0",
@@ -16,7 +26,6 @@
     "express": "^4.19.2",
     "html-to-docx": "^1.8.0",
     "mammoth": "^1.8.0",
-    "nas-file-manager": "file:",
     "sharp": "^0.33.5",
     "xlsx": "^0.18.5",
     "yauzl": "^3.4.0"
