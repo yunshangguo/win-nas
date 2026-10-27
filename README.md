@@ -4,12 +4,35 @@
 >
 > 一个跑在 Windows 上的网页多客户端零安装文件管理器，目标是对齐 QNAP File Station 的核心体验。
 
-[English abstract](#english-abstract) · [特性 Features](#-核心特性) · [快速开始 Quick Start](#-快速开始) · [API 参考 docs/API.md](docs/API.md)
+[English abstract](#english-abstract) · [界面预览 Screenshots](#-界面预览) · [特性 Features](#-核心特性) · [快速开始 Quick Start](#-快速开始) · [API 参考 docs/API.md](docs/API.md)
+
+---
+
+## 📸 界面预览
+
+> 系统运行时的真实 WebUI 截图（浏览器访问 `http://localhost:8080`）。
+
+**文件管理器 · 列表视图** —— 左侧目录树 / 工具栏 / 真实 Windows 路径地址栏 / 批量选择与「打开」操作
+
+![列表视图](screenshots/webui-list-view.png)
+
+**平铺视图** —— 文件夹 / 文件缩略图卡片，支持列表 · 平铺 · 幻灯片三视图切换
+
+![平铺视图](screenshots/webui-tiles-view.png)
+
+**新建菜单** —— 新建文件夹 / 文本 / 文档 / 表格，一键创建
+
+![新建菜单](screenshots/webui-new-menu.png)
+
+**文件夹浏览** —— 大目录分页加载（类型 / 大小 / 修改时间列齐全）
+
+![文件夹列表](screenshots/webui-folder-list.png)
 
 ---
 
 ## 目录
 
+- [界面预览](#-界面预览)
 - [核心特性](#-核心特性)
 - [系统架构](#-系统架构)
 - [目录结构](#-目录结构)
