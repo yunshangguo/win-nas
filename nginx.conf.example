@@ -1,0 +1,49 @@
+# NasManager 反向代理模板（Nginx）—— 把明文 HTTP 升级为 HTTPS
+#
+# 作用：NasManager 本体只跑 HTTP（端口 5000），由 Nginx 在前面终止 TLS。
+# 这样 WebDAV 的 HTTP Basic 认证密码不再以明文在网络上裸奔；可自签证书（局域网）或 ACME（公网）。
+#
+# 用法：把本文件 include 进你的 nginx 配置（或在 http{} 块内粘贴），按需修改 server_name / 证书路径，
+#       然后 `nginx -s reload`。NasManager 已设置 trust proxy = loopback，反代后会话 Cookie 自动加 Secure。
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name nas.example.com;   # 改成你的域名；纯局域网可改成 nas.lan
+
+    # —— 证书：公网用 ACME（certbot 等）生成的；局域网自签见下方注释 ——
+    ssl_certificate     /etc/nginx/ssl/nas.fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/nas.privkey.pem;
+    # 局域网自签（无公网域名）示例：
+    # ssl_certificate     /etc/nginx/ssl/nas-selfsigned.crt;
+    # ssl_certificate_key /etc/nginx/ssl/nas-selfsigned.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+
+    # 上传大文件（与 NasManager 的 TUS 断点续传配合）
+    client_max_body_size 0;
+    proxy_request_buffering off;
+    proxy_read_timeout 3600s;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # SSE（实时刷新）需要关掉缓冲
+        proxy_set_header Connection        '';
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding on;
+    }
+}
+
+# 可选：80 端口跳转到 HTTPS（公网场景）
+# server {
+#     listen 80;
+#     server_name nas.example.com;
+#     return 301 https://$host$request_uri;
+# }

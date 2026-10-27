@@ -1,0 +1,24 @@
+{
+  "name": "nas-file-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows-native NAS-style file manager: TUS resumable upload, recycle-bin integration, system-drive guard, zip compress/extract with AES",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@tus/file-store": "^1.5.0",
+    "@tus/server": "^1.10.0",
+    "acme-client": "^5.4.0",
+    "archiver": "^6.0.1",
+    "archiver-zip-encrypted": "^1.0.5",
+    "express": "^4.19.2",
+    "html-to-docx": "^1.8.0",
+    "mammoth": "^1.8.0",
+    "nas-file-manager": "file:",
+    "sharp": "^0.33.5",
+    "xlsx": "^0.18.5",
+    "yauzl": "^3.4.0"
+  }
+}

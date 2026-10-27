@@ -1,0 +1,74 @@
+# ========== 依赖 ==========
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json.bak
+
+# ========== 运行时日志 ==========
+*.log
+nas.log
+nas_stdout.log
+supervisor.log
+supervisor_out.log
+server.log
+scripts/server.log
+
+# ========== 配置密钥（保留样例） ==========
+.env
+# 反向代理 / 服务样例保留：
+#   .env.example  /  nginx.conf.example  /  Caddyfile  /  nas_task.xml
+#   start_nas.bat  /  install-service.bat
+# 请勿提交真实 .env（含 AUTH_PASSWORD 等敏感信息）
+
+# ========== 应用数据目录（运行期生成，绝不入库） ==========
+# DATA_DIR 默认 <项目>/data；USER_HOME_BASE 默认 <项目>/home。
+# 二者均在项目安装目录内，必须忽略以免把用户文件/密钥提交到仓库。
+# 注意：.gitignore 仅以“行首 #”为注释，行内 # 不算注释，故模式须单独成行。
+
+# 旧的硬编码数据目录（兼容历史）
+NasManagerData/
+# 应用数据：索引/缩略图/上传临时/数据库/会话/secrets（默认 <项目>/data）
+data/
+# 用户个人主目录：<项目>/home/<用户名>
+home/
+# 兼容历史顶层 uploads
+uploads/
+
+# ========== 临时 / 垃圾文件 ==========
+killres2.txt
+nul
+*.tmp
+*.bak
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ========== 部署产物（按需，勿入库） ==========
+nssm.exe
+cert/
+*.pem
+*.key
+*.crt
+
+# ========== 编辑器 / 系统 ==========
+.vscode/
+.idea/
+.DS_Store
+
+# ========== 本地临时验证脚本（非交付，勿入库） ==========
+# 根目录临时测试脚本
+/selftest.js
+/test_archives.js
+/test_new_features.js
+/test_newfeat.js
+/verify_ctx2.js
+/verify_fixes_8.js
+/test_*.js
+/verify_*.js
+# scripts/ 下临时测试
+scripts/test_*.js
+scripts/verify_*.js
+scripts/test_archives.js
+scripts/test_newfeat.js
+scripts/test_new_features.js

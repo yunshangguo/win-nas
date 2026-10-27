@@ -1,0 +1,36 @@
+# NasManager 反向代理模板（Caddy）—— 把明文 HTTP 升级为 HTTPS
+#
+# 作用：NasManager 本体只跑 HTTP（端口 5000），由 Caddy 在前面终止 TLS。
+# 这样 WebDAV 的 HTTP Basic 认证密码不再以明文（base64）在网络上裸奔，局域网也能防嗅探；
+# 有公网域名时 Caddy 还会自动申请/续期 Let's Encrypt 证书。
+#
+# 用法：把下面的域名换成你的（DDNS 域名 或 局域网主机名+端口），然后 `caddy run --config Caddyfile`
+# 注意：NasManager 已在代码里设置 trust proxy = loopback，反代后 req.secure 会被正确识别，
+#       会话 Cookie 自动加 Secure 标记；同时登录限流按真实客户端 IP 生效。
+
+{
+  # 纯局域网 / 无公网域名（自签证书，浏览器会警告一次，属正常）时取消下一行注释：
+  # auto_https disable_redirects
+}
+
+# ===== 方案 A：公网域名（自动申请 Let's Encrypt 证书） =====
+你的域名.example.com {
+  # 防暴力破解：限制登录接口速率（按需取消注释）
+  # rate_limit {
+  #   zone login { key {http.request.header.X-Forwarded-For} events 10 window 1m }
+  # }
+  reverse_proxy 127.0.0.1:5000 {
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+}
+
+# ===== 方案 B：纯局域网自签证书（无公网域名） =====
+# 用法：改文件顶部加 { auto_https disable_redirects }，并把下面注释取消、删掉方案 A 的域名块
+# nas.lan:5001 {
+#   tls internal
+#   reverse_proxy 127.0.0.1:5000 {
+#     header_up X-Forwarded-For {remote_host}
+#     header_up X-Forwarded-Proto {scheme}
+#   }
+# }
