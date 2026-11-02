@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 const isDev = !app.isPackaged;
 // 应用目录：开发态=项目根；打包态=app.asar 根（server.js / src / public 都在此）
@@ -167,11 +168,20 @@ ipcMain.handle('save-settings', (e, data) => {
   // 注意：必须在重启“之前”写盘——startBackend() 在应用启动时已运行，重启后才是全新进程去读它。
   if (data.password && String(data.password).trim()) writePendingPassword(String(data.password).trim());
   // 端口 / 账户 / 密码 / 数据目录变更需要重启后端：重启整个应用以重新加载 server.js。
-  // 带 --relaunch 标记重启，避免上方单实例锁竞态导致“关掉不重启”。
+  // 用 child_process.spawn 显式拉起一份新 exe（detached 脱离父进程），再硬杀旧进程。
+  // 不依赖 app.relaunch()——electron-builder 的 portable 单文件目标下 app.relaunch 经常失效。
+  // 新进程带 --relaunch 标记，启动时即便还拿不到单实例锁也不会自杀（见下方锁判断）。
   setTimeout(() => {
-    const baseArgs = process.argv.slice(1).filter(a => a !== '--relaunch');
-    app.relaunch({ args: baseArgs.concat(['--relaunch']) });
-    app.quit();
+    try {
+      const exe = process.execPath;
+      const args = process.argv.slice(1).filter(a => a !== '--relaunch').concat(['--relaunch']);
+      const child = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: true });
+      child.unref();
+      console.log('[NM] 已显式拉起新实例，即将退出旧实例');
+    } catch (e) {
+      console.error('[NM] 重启失败（无法拉起新实例）:', e.message);
+    }
+    app.exit(0);
   }, 300);
   return { ok: true, restarting: true };
 });
