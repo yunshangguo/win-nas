@@ -26,7 +26,9 @@
     $('status').textContent = '正在保存并重启服务…';
     try {
       const r = await window.nmSettings.save(data);
-      if (r && r.restarting) {
+      if (r && r.started) {
+        $('status').textContent = '已保存，正在启动服务并打开主界面…';
+      } else if (r && r.restarting) {
         $('status').textContent = '已保存，程序即将重启以应用新设置…';
       }
     } catch (e) {

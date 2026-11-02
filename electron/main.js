@@ -5,8 +5,8 @@
 // 设计要点：
 //  - 后端 server.js 直接在本进程内 require 启动（无需额外的 node 子进程），
 //    启动前通过环境变量注入端口 / 账户 / 数据目录等设置。
-//  - 设置变更（端口 / 账户 / 密码 / 数据目录 / 根目录）通过 app.relaunch()
-//    重启整个应用来生效，简单且可靠。
+//  - 首次运行（无 settings.json）先只弹“设置”窗口，用户保存后才启动后端并进入主界面，
+//    无需重启；运行中再改设置才通过 app.relaunch() 重启整个应用来生效。
 //  - 唯一的“桌面窗口”即主窗口，加载 http://127.0.0.1:<port>/ （即 WebUI）；
 //    另有独立“设置”窗口用于配置端口 / 账户 / 密码。
 // ============================================================================
@@ -164,14 +164,20 @@ ipcMain.handle('save-settings', (e, data) => {
   settings.dataDir = (data.dataDir || path.join(BASE, 'data')).trim();
   settings.roots = (data.roots || '').trim();
   persistSettings();
-  // 新密码必须立即落盘为一次性明文文件（password.plain），由 auth 模块在“下次启动”时哈希入库并删除。
-  // 注意：必须在重启“之前”写盘——startBackend() 在应用启动时已运行，重启后才是全新进程去读它。
+  // 新密码必须立即落盘为一次性明文文件（password.plain），由 auth 模块在“启动/下次启动”时哈希入库并删除。
   if (data.password && String(data.password).trim()) writePendingPassword(String(data.password).trim());
-  // 端口 / 账户 / 密码 / 数据目录变更需要重启后端：重启整个应用以重新加载 server.js。
-  // 用 Electron 官方 app.relaunch() 重启——它会“在旧实例完全退出后，用正确的启动命令拉起新实例”，
-  // 因此：① 避开了便携版单文件下 process.execPath 指向临时解压目录、spawn 出来静默失败的问题；
-  // ② 新实例在旧实例释放单实例锁之后才启动，从根上消除了“关掉却不重启”的竞态。
-  // 仍带 --relaunch 标记作为兜底：万一新实例在锁释放前抢跑，也不会因拿不到锁而自杀。
+  if (!serverStarted) {
+    // 首次运行：后端尚未启动，直接以刚保存的设置启动后端并进入主界面——无需重启。
+    startBackend();
+    createMainWindow();
+    if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();
+    return { ok: true, started: true };
+  }
+  // 运行中修改设置：端口 / 账户 / 数据目录变更需重启后端以生效。
+  // 用 Electron 官方 app.relaunch() 重启——它在旧实例完全退出后才拉起新实例，
+  // 规避便携版单文件下 process.execPath 指向临时解压目录、直接 spawn 静默失败的问题；
+  // 新实例在旧实例释放单实例锁之后才启动，从根上消除“关掉却不重启”的竞态。
+  // 仍带 --relaunch 标记兜底：万一新实例在锁释放前抢跑，也不会因拿不到锁而自杀。
   setTimeout(() => {
     const args = process.argv.slice(1).filter(a => a !== '--relaunch').concat(['--relaunch']);
     app.relaunch({ args });
@@ -209,14 +215,20 @@ if (!gotLock && !process.argv.includes('--relaunch')) { app.quit(); }
 
 app.whenReady().then(() => {
   buildMenu();
-  startBackend();
-  createMainWindow();
-  // 首次运行（无设置文件）自动弹出设置，方便配置端口 / 账户 / 密码
-  if (!fs.existsSync(SETTINGS_PATH)) setTimeout(openSettings, 1200);
+  if (fs.existsSync(SETTINGS_PATH)) {
+    // 已有设置：直接启动后端 + 主窗口
+    startBackend();
+    createMainWindow();
+  } else {
+    // 首次运行：先只弹设置窗口，等用户保存后才启动后端并进入主界面（无需重启）
+    openSettings();
+  }
   app.on('second-instance', () => {
     if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
   });
-  app.on('activate', () => { if (!mainWindow) createMainWindow(); });
+  app.on('activate', () => {
+    if (!mainWindow) { if (!fs.existsSync(SETTINGS_PATH)) openSettings(); else createMainWindow(); }
+  });
 });
 
 app.on('window-all-closed', () => { app.quit(); });
