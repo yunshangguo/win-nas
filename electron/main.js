@@ -168,21 +168,15 @@ ipcMain.handle('save-settings', (e, data) => {
   // 注意：必须在重启“之前”写盘——startBackend() 在应用启动时已运行，重启后才是全新进程去读它。
   if (data.password && String(data.password).trim()) writePendingPassword(String(data.password).trim());
   // 端口 / 账户 / 密码 / 数据目录变更需要重启后端：重启整个应用以重新加载 server.js。
-  // 用 child_process.spawn 显式拉起一份新 exe（detached 脱离父进程），再硬杀旧进程。
-  // 不依赖 app.relaunch()——electron-builder 的 portable 单文件目标下 app.relaunch 经常失效。
-  // 新进程带 --relaunch 标记，启动时即便还拿不到单实例锁也不会自杀（见下方锁判断）。
+  // 用 Electron 官方 app.relaunch() 重启——它会“在旧实例完全退出后，用正确的启动命令拉起新实例”，
+  // 因此：① 避开了便携版单文件下 process.execPath 指向临时解压目录、spawn 出来静默失败的问题；
+  // ② 新实例在旧实例释放单实例锁之后才启动，从根上消除了“关掉却不重启”的竞态。
+  // 仍带 --relaunch 标记作为兜底：万一新实例在锁释放前抢跑，也不会因拿不到锁而自杀。
   setTimeout(() => {
-    try {
-      const exe = process.execPath;
-      const args = process.argv.slice(1).filter(a => a !== '--relaunch').concat(['--relaunch']);
-      const child = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: true });
-      child.unref();
-      console.log('[NM] 已显式拉起新实例，即将退出旧实例');
-    } catch (e) {
-      console.error('[NM] 重启失败（无法拉起新实例）:', e.message);
-    }
+    const args = process.argv.slice(1).filter(a => a !== '--relaunch').concat(['--relaunch']);
+    app.relaunch({ args });
     app.exit(0);
-  }, 300);
+  }, 200);
   return { ok: true, restarting: true };
 });
 
