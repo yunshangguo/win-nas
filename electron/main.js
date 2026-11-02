@@ -69,8 +69,7 @@ function applyEnvFromSettings() {
   if (settings.roots) process.env.ROOTS = String(settings.roots);
 }
 
-// 若本次保存带了新密码，写入一次性明文文件，由 auth 模块哈希入库并删除
-let pendingPassword = null;
+// 若本次保存带了新密码，立即写入一次性明文文件，由 auth 模块在下次启动时哈希入库并删除
 function writePendingPassword(pwd) {
   if (!pwd) return;
   pwd = String(pwd).trim();
@@ -85,7 +84,6 @@ let serverStarted = false;
 function startBackend() {
   if (serverStarted) return;
   applyEnvFromSettings();
-  if (pendingPassword) { writePendingPassword(pendingPassword); pendingPassword = null; }
   try {
     require(path.join(APP_DIR, 'server.js'));
     serverStarted = true;
@@ -165,9 +163,16 @@ ipcMain.handle('save-settings', (e, data) => {
   settings.dataDir = (data.dataDir || path.join(BASE, 'data')).trim();
   settings.roots = (data.roots || '').trim();
   persistSettings();
-  if (data.password && String(data.password).trim()) pendingPassword = String(data.password).trim();
-  // 端口 / 账户 / 密码 / 数据目录变更需要重启后端：重启整个应用以重新加载 server.js
-  setTimeout(() => { app.relaunch(); app.exit(0); }, 300);
+  // 新密码必须立即落盘为一次性明文文件（password.plain），由 auth 模块在“下次启动”时哈希入库并删除。
+  // 注意：必须在重启“之前”写盘——startBackend() 在应用启动时已运行，重启后才是全新进程去读它。
+  if (data.password && String(data.password).trim()) writePendingPassword(String(data.password).trim());
+  // 端口 / 账户 / 密码 / 数据目录变更需要重启后端：重启整个应用以重新加载 server.js。
+  // 带 --relaunch 标记重启，避免上方单实例锁竞态导致“关掉不重启”。
+  setTimeout(() => {
+    const baseArgs = process.argv.slice(1).filter(a => a !== '--relaunch');
+    app.relaunch({ args: baseArgs.concat(['--relaunch']) });
+    app.quit();
+  }, 300);
   return { ok: true, restarting: true };
 });
 
@@ -192,7 +197,11 @@ function buildMenu() {
 }
 
 // ---- 单实例 ----
-if (!app.requestSingleInstanceLock()) { app.quit(); }
+// 普通双击启动若已有实例则退出（避免重复开窗口）。
+// 但“设置后重启”(app.relaunch) 会带 --relaunch 标记：此时旧实例尚未释放锁，新实例若直接
+// 退出会导致“关掉却不重启”。因此 --relaunch 时放行，由旧实例退出后新实例正常接管。
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock && !process.argv.includes('--relaunch')) { app.quit(); }
 
 app.whenReady().then(() => {
   buildMenu();
