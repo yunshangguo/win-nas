@@ -142,6 +142,13 @@ function loadUsers() {
   // 首次运行：播种引导管理员
   let hash = null;
   if (fs.existsSync(PASSWORD_OVERRIDE)) { try { hash = fs.readFileSync(PASSWORD_OVERRIDE, 'utf8').trim(); } catch (e) {} }
+  // 一次性明文密码文件（桌面端“设置”窗口写入）：优先于随机密码，用完即删，不残留明文
+  if (!hash) {
+    const PASSWORD_PLAIN = path.join(SECRET_DIR, 'password.plain');
+    if (fs.existsSync(PASSWORD_PLAIN)) {
+      try { hash = derive(sha256hex(fs.readFileSync(PASSWORD_PLAIN, 'utf8').trim())); fs.unlinkSync(PASSWORD_PLAIN); } catch (e) {}
+    }
+  }
   if (!hash) {
     let pw = (process.env.AUTH_PASSWORD || '').trim();
     if (!pw) {
@@ -164,7 +171,22 @@ function loadUsers() {
   ensureHome(_users[ADMIN_USERNAME]); // 管理员个人主目录
 }
 
-function init() { loadUsers(); }
+// 由桌面端“设置”写入的一次性明文密码：无论是否首次运行，都用来重置管理员密码并立即删除，避免明文残留。
+function applyPendingPassword() {
+  const PASSWORD_PLAIN = path.join(SECRET_DIR, 'password.plain');
+  if (!fs.existsSync(PASSWORD_PLAIN)) return;
+  try {
+    const plain = fs.readFileSync(PASSWORD_PLAIN, 'utf8').trim();
+    fs.unlinkSync(PASSWORD_PLAIN);
+    if (!plain) return;
+    const h = derive(sha256hex(plain));
+    let admin = _users[ADMIN_USERNAME];
+    if (!admin) admin = Object.values(_users).find(u => u.role === 'admin');
+    if (admin) { admin.passwordHash = h; persistUsers(); console.log('[AUTH] 已通过 password.plain 重置管理员密码'); }
+  } catch (e) { console.error('[AUTH] password.plain 处理失败:', e.message); }
+}
+
+function init() { loadUsers(); applyPendingPassword(); }
 
 // 校验登录凭据，成功返回用户记录（含 username），失败返回 null
 function verifyLogin(body) {

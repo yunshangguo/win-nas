@@ -76,3 +76,8 @@ scripts/test_new_features.js
 # ========== 打包发行产物（exe / 第三方二进制勿入库） ==========
 release/NasManager.exe
 release/nssm.exe
+# Electron 构建输出（dist/ 为 electron-builder 产物；out/ 为缓存）
+dist/
+out/
+# 桌面端用户设置（端口/账户/数据目录等，含本机路径，勿入库）
+settings.json

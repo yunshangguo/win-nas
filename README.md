@@ -4,7 +4,7 @@
 >
 > 一个跑在 Windows 上的网页多客户端零安装文件管理器，目标是对齐 QNAP File Station 的核心体验。
 
-[English abstract](#english-abstract) · [界面预览 Screenshots](#-界面预览) · [特性 Features](#-核心特性) · [快速开始 Quick Start](#-快速开始) · [API 参考 docs/API.md](docs/API.md)
+[English abstract](#english-abstract) · [界面预览 Screenshots](#-界面预览) · [特性 Features](#-核心特性) · [快速开始 Quick Start](#-快速开始) · [桌面端 Desktop](#桌面端windows-桌面程序) · [API 参考 docs/API.md](docs/API.md)
 
 ---
 
@@ -42,6 +42,7 @@
 - [API 概览](#-api-概览)
 - [安全模型](#-安全模型)
 - [部署](#-部署)
+- [桌面端（Windows 桌面程序）](#桌面端windows-桌面程序)
 - [已知限制](#-已知限制)
 - [故障排查](#-故障排查)
 - [许可证](#-许可证)
@@ -345,6 +346,35 @@ schtasks /create /tn NasManagerServer /xml D:\NasManager\nas_task.xml /f
 ## 📄 许可证
 
 [MIT](LICENSE) —— 详见仓库根目录 `LICENSE` 文件。
+
+---
+
+## 桌面端（Windows 桌面程序）
+
+除了「网页 / 服务」两种用法，NasManager 还提供**真正的 Windows 桌面程序**：双击 `NasManager.exe` 即弹出窗口，窗口内直接承载 WebUI；并内置「设置」窗口用于配置 **端口 / 管理员账户 / 管理员密码 / 数据目录 / 文件根目录**，保存后自动重启生效。
+
+### 架构
+- 后端 `server.js` 直接在主进程内启动（不是另起一个黑框控制台），前端 WebUI 由主窗口加载 `http://127.0.0.1:<端口>/`。
+- 设置写入程序数据目录的 `settings.json`；密码通过一次性 `password.plain` 文件交由 `src/auth.js` 用真实 `scrypt` 算法哈希入库并立即删除，**永不落明文**。
+- 单实例：重复双击只会聚焦已开的窗口，不会起第二个服务。
+
+### 开发调试
+```bash
+npm install            # 安装依赖（含 electron / electron-builder）
+npm run electron:dev   # 以桌面模式启动（开发态数据落在项目目录）
+```
+
+### 打包成 exe（Windows）
+```bash
+npm install
+npm run dist           # 产出 dist/NasManager-<版本>-win-x64-portable.exe（单文件便携 exe）
+```
+- 默认 `win.target = portable`（无需安装、解压即用）；如需安装版，改 `package.json` 的 `build.win.target` 为 `nsis`。
+- 自定义图标：放一张 `build/icon.ico`（或 `build/icon.png`），electron-builder 会自动采用。
+- 仍可用原有的「纯服务 / 网页」方式：直接 `npm start`（或此前发布的 `release/` 便携版）。
+
+### 自动构建并发布到 GitHub Releases
+仓库附带 `.github/workflows/build-windows.yml`：在 GitHub 上给代码打 `v*` 标签（如 `v0.1.0`）并推送，GitHub Actions 会在 Windows Runner 上自动 `npm install` → `electron-builder` 打包 → 把 exe 上传到对应 Release。无需在本机构建。
 
 ---
 

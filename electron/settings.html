@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NasManager 设置</title>
+  <style>
+    :root { --blue: #2f6fed; --bg: #f5f6f8; --border: #dfe3e8; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 22px 24px 16px; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: #1f2329; font-size: 13px;
+    }
+    h1 { font-size: 17px; margin: 0 0 4px; font-weight: 600; }
+    .sub { color: #8a94a6; margin: 0 0 18px; font-size: 12px; }
+    .field { margin-bottom: 14px; }
+    label { display: block; font-weight: 600; margin-bottom: 5px; }
+    .hint { color: #8a94a6; font-size: 11px; margin-top: 4px; line-height: 1.5; }
+    input[type=text], input[type=number], input[type=password] {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+      font-size: 13px; background: #fff; outline: none;
+    }
+    input:focus { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(47,111,237,.15); }
+    #save {
+      margin-top: 6px; width: 100%; padding: 10px; border: none; border-radius: 6px;
+      background: var(--blue); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    #save:hover { filter: brightness(1.05); }
+    #status { margin-top: 12px; font-size: 12px; color: var(--blue); min-height: 16px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>NasManager 设置</h1>
+  <p class="sub">配置后程序会重启以应用新设置。设置保存在程序数据目录的 settings.json。</p>
+
+  <div class="field">
+    <label for="port">服务端口 (Port)</label>
+    <input id="port" type="number" min="1" max="65535" />
+    <div class="hint">WebUI 与 API 监听的端口，默认 8080。被占用会导致启动失败。</div>
+  </div>
+
+  <div class="field">
+    <label for="authUsername">管理员账户</label>
+    <input id="authUsername" type="text" />
+    <div class="hint">首次运行播种的管理员用户名，默认 admin。</div>
+  </div>
+
+  <div class="field">
+    <label for="password">管理员密码</label>
+    <input id="password" type="password" placeholder="留空则不修改" autocomplete="new-password" />
+    <div class="hint">留空 = 不修改（首次运行且留空则由系统随机生成，见 data/secrets/initial_admin_password.txt）。填写后下次启动即用此密码。</div>
+  </div>
+
+  <div class="field">
+    <label for="dataDir">数据目录 (DATA_DIR)</label>
+    <input id="dataDir" type="text" placeholder="例如 D:\NasManagerData" />
+    <div class="hint">用户数据 / 索引 / 缩略图存放位置。默认位于程序数据目录下的 data\。</div>
+  </div>
+
+  <div class="field">
+    <label for="roots">文件根目录 (ROOTS)</label>
+    <input id="roots" type="text" placeholder="例如 share:D:\Share;backup:E:\Backup" />
+    <div class="hint">对外暴露的文件根，格式 key:绝对路径，多个用分号分隔。留空则仅“此电脑 + 个人空间”。</div>
+  </div>
+
+  <button id="save">保存并重启服务</button>
+  <div id="status"></div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

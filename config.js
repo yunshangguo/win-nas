@@ -6,7 +6,9 @@ const path = require('path');
 // 不能作为“安装目录”写入数据；数据目录 / 用户主目录 / .env 必须落在 exe 实际所在目录。
 // 故引入 BASE_DIR：pkg 用 process.execPath 所在目录，否则退回源码 __dirname。
 const IS_PKG = (typeof process.pkg !== 'undefined');
-const BASE_DIR = IS_PKG ? path.dirname(process.execPath) : __dirname;
+// APP_BASE_DIR：Electron 桌面端等“打包后 __dirname 只读”场景下，用来把数据目录/配置落到可写位置。
+// 未设置时回退到原逻辑（pkg 用 exe 目录，否则用源码目录）。
+const BASE_DIR = process.env.APP_BASE_DIR || (IS_PKG ? path.dirname(process.execPath) : __dirname);
 
 // ---- 读取 .env（极简，不引第三方依赖） ----
 function loadEnv() {
@@ -43,7 +45,8 @@ const SYSTEM_DRIVES = (process.env.SYSTEM_DRIVES || 'C')
 // ===== 应用数据目录：默认放在「项目安装目录」下，与盘符彻底解耦 =====
 // 这样无论项目装在 C: 还是 D:，或电脑只有 C 盘，都能正常工作。
 // 如需自定义（例如改到独立数据盘），在 .env 设置 DATA_DIR= 绝对路径即可覆盖。
-const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
+// 数据目录默认落在 BASE_DIR/data（BASE_DIR 在 Electron 下为可写基目录），与盘符彻底解耦。
+const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(BASE_DIR, 'data'));
 const dataDrive = getDrive(DATA_DIR);
 
 // ===== 系统盘提示（不再阻断启动） =====
