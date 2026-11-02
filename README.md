@@ -374,7 +374,7 @@ npm run dist           # 产出 dist/NasManager-<版本>-win-x64-portable.exe（
 - 仍可用原有的「纯服务 / 网页」方式：直接 `npm start`（或此前发布的 `release/` 便携版）。
 
 ### 自动构建并发布到 GitHub Releases
-仓库附带 `.github/workflows/build-windows.yml`：在 GitHub 上给代码打 `v*` 标签（如 `v0.1.0`）并推送，GitHub Actions 会在 Windows Runner 上自动 `npm install` → `electron-builder` 打包 → 把 exe 上传到对应 Release。无需在本机构建。
+仓库附带 `.github/workflows/build-windows.yml`：在 GitHub 上给代码打 `v*` 标签（如 `v0.2.0`）并推送，GitHub Actions 会在 Windows Runner 上自动 `npm install` → `electron-builder` 打包 → 把 exe 上传到对应 Release。无需在本机构建。
 
 ---
 
