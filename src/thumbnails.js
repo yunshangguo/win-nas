@@ -2,10 +2,17 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { DATA_DIR } = require('../config');
+const config = require('../config');
 
-const THUMB_DIR = path.join(DATA_DIR, 'thumbnails');
+let THUMB_DIR = path.join(config.dataDir, 'thumbnails');
 fs.mkdirSync(THUMB_DIR, { recursive: true });
+
+// 运行时热切换数据目录（缓存目录随之切换，无需重启进程）
+function setDataDir(dir) {
+  config.setDataDir(dir);
+  THUMB_DIR = path.join(config.dataDir, 'thumbnails');
+  fs.mkdirSync(THUMB_DIR, { recursive: true });
+}
 
 const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tif', '.tiff']);
 const VIDEO_EXT = new Set(['.mp4', '.mkv', '.mov', '.avi', '.m4v', '.webm', '.wmv', '.flv']);
@@ -115,4 +122,4 @@ function getThumbnailQueued(rootKey, sub, absPath) {
   return runThumb(() => getThumbnail(rootKey, sub, absPath));
 }
 
-module.exports = { getThumbnail: getThumbnailQueued, getThumbnailRaw: getThumbnail, hasSharp: !!sharp, IMAGE_EXT, VIDEO_EXT };
+module.exports = { getThumbnail: getThumbnailQueued, getThumbnailRaw: getThumbnail, hasSharp: !!sharp, IMAGE_EXT, VIDEO_EXT, setDataDir };

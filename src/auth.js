@@ -12,25 +12,27 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const { DATA_DIR, ROOTS } = require('../config');
+const config = require('../config');
+const { ROOTS } = config;
 const { COMPUTER_ROOT, HOME_ROOT, homePathFor } = require('./paths');
 
-// 凭据与盐值全部落在 DATA_DIR（非系统盘），绝不写 C:
-const SECRET_DIR = path.join(DATA_DIR, 'secrets');
+// 凭据与盐值全部落在 config.dataDir（非系统盘），绝不写 C:；数据目录可运行时热切换。
+let SECRET_DIR = path.join(config.dataDir, 'secrets');
 fs.mkdirSync(SECRET_DIR, { recursive: true });
 
-const SALT_FILE = path.join(SECRET_DIR, 'auth.salt');
-const salt = (() => {
+function _saltFromFile() {
   if (fs.existsSync(SALT_FILE)) return fs.readFileSync(SALT_FILE);
   const s = crypto.randomBytes(16);
   fs.writeFileSync(SALT_FILE, s); // 随机盐值持久化，重启后哈希保持一致
   return s;
-})();
+}
+let SALT_FILE = path.join(SECRET_DIR, 'auth.salt');
+let salt = _saltFromFile();
 
-// 用户表（DATA_DIR/secrets/users.json）；首次运行自动播种管理员
-const USERS_FILE = path.join(SECRET_DIR, 'users.json');
+// 用户表（config.dataDir/secrets/users.json）；首次运行自动播种管理员
+let USERS_FILE = path.join(SECRET_DIR, 'users.json');
 // 历史遗留：用户改过密码时落盘的覆盖哈希（仅用于迁移到管理员账户）
-const PASSWORD_OVERRIDE = path.join(SECRET_DIR, 'password.override');
+let PASSWORD_OVERRIDE = path.join(SECRET_DIR, 'password.override');
 
 // 引导管理员用户名（来自 env，缺省 admin）；运行时可改名，故用 let
 let ADMIN_USERNAME = (process.env.AUTH_USERNAME || 'admin').trim();
@@ -42,7 +44,7 @@ const SESSION_TTL = 1000 * 60 * 60 * 12;
 const sessions = new Map(); // sessionId -> { username, expiresAt }
 
 // ---- 会话持久化 ----
-const SESSIONS_FILE = path.join(SECRET_DIR, 'sessions.json');
+let SESSIONS_FILE = path.join(SECRET_DIR, 'sessions.json');
 function loadSessions() {
   try {
     if (fs.existsSync(SESSIONS_FILE)) {
@@ -187,6 +189,24 @@ function applyPendingPassword() {
 }
 
 function init() { loadUsers(); applyPendingPassword(); }
+
+// 运行时热切换数据目录（桌面端“设置”保存数据目录变更时调用，无需重启进程）：
+// 更新凭据路径并重新加载用户表 / 会话（盐值同步为新目录的值）。
+// 注意：调用方需先完成旧目录数据到新目录的迁移（拷贝），本函数仅“重新挂载”。
+function setDataDir(dir) {
+  config.setDataDir(dir);
+  SECRET_DIR = path.join(config.dataDir, 'secrets');
+  fs.mkdirSync(SECRET_DIR, { recursive: true });
+  SALT_FILE = path.join(SECRET_DIR, 'auth.salt');
+  USERS_FILE = path.join(SECRET_DIR, 'users.json');
+  PASSWORD_OVERRIDE = path.join(SECRET_DIR, 'password.override');
+  SESSIONS_FILE = path.join(SECRET_DIR, 'sessions.json');
+  salt = _saltFromFile();
+  _users = {};
+  sessions.clear();
+  loadUsers();
+  loadSessions();
+}
 
 // 运行时热更新管理员凭据（桌面端“设置”保存后调用，无需重启进程）。
 // - username 可改名（重命名管理员条目，同时更新引导名，使后续启动一致）；
@@ -379,7 +399,7 @@ function setOwnPassword(username, oldHash, newHash) {
 module.exports = {
   SESSION_TTL, init, verifyLogin, createSession, getSession, destroySession,
   getUser, publicUser, userRoots, hasPerm, listUsers, createUser, updateUser, deleteUser,
-  setOwnPassword, revokeUserSessions, reconfigureAdmin
+  setOwnPassword, revokeUserSessions, reconfigureAdmin, setDataDir
 };
 // USERNAME 为可改名的管理员引导名，用 getter 暴露以保证重命名后外部读取即时生效
 Object.defineProperty(module.exports, 'USERNAME', { enumerable: true, get: () => USERNAME });

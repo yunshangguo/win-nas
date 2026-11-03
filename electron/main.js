@@ -5,17 +5,19 @@
 // 设计要点：
 //  - 后端 server.js 直接在本进程内 require 启动（无需额外的 node 子进程），
 //    启动前通过环境变量注入端口 / 账户 / 数据目录等设置。
-//  - 首次运行（无 settings.json）先只弹“设置”窗口，用户保存后才启动后端并进入主界面，
-//    无需重启；运行中再改设置才通过 app.relaunch() 重启整个应用来生效。
+//  - 首次运行（无 settings.json）先只弹“设置”窗口，用户保存后才启动后端并进入主界面，无需重启。
+//  - 运行中修改任意设置（端口 / 账户 / 密码 / 根目录 / 数据目录）一律“运行时热生效”，
+//    进程不退出、窗口不关：端口热切换监听、账户密码即时更新、根目录原地替换、
+//    数据目录在线迁移 + 各子系统重新挂载（auth/share/search/thumbnails/上传库），彻底免重启。
+//  - 关闭后再打开：settings.json 已落盘，直接以保存的设置启动后端 + 主界面，仍是上次配置、直接可用。
 //  - 唯一的“桌面窗口”即主窗口，加载 http://127.0.0.1:<port>/ （即 WebUI）；
-//    另有独立“设置”窗口用于配置端口 / 账户 / 密码。
+//    另有独立“设置”窗口用于配置端口 / 账户 / 密码 / 数据目录 / 根目录。
 // ============================================================================
 const { app, BrowserWindow, Menu, ipcMain, dialog } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
 
 const isDev = !app.isPackaged;
 // 应用目录：开发态=项目根；打包态=app.asar 根（server.js / src / public 都在此）
@@ -96,19 +98,23 @@ function startBackend() {
   }
 }
 
-// 数据目录变更时，把旧目录下的凭据（盐值/用户表/会话/password.plain 等）迁移到新目录，
-// 保证重启后账号不丢、密码生效。仅复制新目录尚不存在的文件，避免覆盖。
-function migrateSecrets(oldDir, newDir) {
-  try {
-    const src = path.join(oldDir, 'secrets');
-    const dst = path.join(newDir, 'secrets');
-    fs.mkdirSync(newDir, { recursive: true });
-    fs.mkdirSync(dst, { recursive: true });
-    for (const f of ['auth.salt', 'users.json', 'sessions.json', 'password.override', 'password.plain']) {
-      const sf = path.join(src, f), df = path.join(dst, f);
-      if (fs.existsSync(sf) && !fs.existsSync(df)) { try { fs.copyFileSync(sf, df); } catch (e) {} }
-    }
-  } catch (e) { console.error('[NM] 凭据迁移失败（新数据目录将重新播种管理员）:', e.message); }
+// 数据目录变更时，把旧目录下的全部内容递归拷贝到新目录。逐文件容错：个别被占用的文件
+// （如进行中的上传临时文件、当前会话锁）跳过而不阻断整体迁移，避免新目录缺 users.json
+// 而被迫重新播种、丢失账号。拷贝完成后由 server.setDataDir() 完成“重新挂载”，全程无需重启进程。
+function copyTree(srcDir, dstDir) {
+  if (!fs.existsSync(srcDir)) return;
+  fs.mkdirSync(dstDir, { recursive: true });
+  for (const e of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const s = path.join(srcDir, e.name), d = path.join(dstDir, e.name);
+    try {
+      if (e.isDirectory()) copyTree(s, d);
+      else fs.copyFileSync(s, d);
+    } catch (err) { /* 个别被占用文件跳过，不阻断迁移 */ }
+  }
+}
+function migrateDataDir(oldDir, newDir) {
+  try { copyTree(oldDir, newDir); console.log('[NM] 已迁移数据目录内容: ' + oldDir + ' -> ' + newDir); }
+  catch (e) { console.error('[NM] 数据目录迁移失败:', e.message); }
 }
 
 // ---- 窗口 ----
@@ -210,16 +216,23 @@ ipcMain.handle('save-settings', (e, data) => {
     return { ok: true, applied: true, portChanged: !!(res && res.portChanged) };
   }
 
-  // 数据目录变更：结构性变更，需重启进程以切换数据存放位置。
-  // 先迁移凭据到新目录（不丢账号），新密码同样落 password.plain 供重启后消费。
-  if (newPassword) writePendingPassword(newPassword);
-  migrateSecrets(prevDataDir, settings.dataDir);
-  setTimeout(() => {
-    const args = process.argv.slice(1).filter(a => a !== '--relaunch').concat(['--relaunch']);
-    app.relaunch({ args });
-    app.exit(0);
-  }, 200);
-  return { ok: true, restarting: true };
+  // 数据目录变更：直接在线迁移 + 热切换，无需重启进程。
+  // 先把旧目录的全部数据递归拷贝到新目录，再热切换各子系统（auth/share/search/thumbnails/tus 等），
+  // 最后把本次保存的端口 / 账户 / 密码 / 根目录一并热应用，全程进程不退出、窗口不关。
+  if (settings.dataDir !== prevDataDir) {
+    migrateDataDir(prevDataDir, settings.dataDir);
+    try { backendModule.setDataDir(settings.dataDir); } catch (e) { console.error('[NM] 数据目录热切换失败:', e.message); }
+    try {
+      backendModule.reconfigure({
+        port: settings.port,
+        roots: settings.roots,
+        authUsername: settings.authUsername,
+        password: newPassword
+      });
+    } catch (e) { console.error('[NM] 设置热应用失败:', e.message); }
+    if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();
+    return { ok: true, applied: true, dataDirChanged: true };
+  }
 });
 
 // ---- 菜单（替代托盘，避免缺图标崩溃） ----
@@ -244,10 +257,8 @@ function buildMenu() {
 
 // ---- 单实例 ----
 // 普通双击启动若已有实例则退出（避免重复开窗口）。
-// 但“设置后重启”(app.relaunch) 会带 --relaunch 标记：此时旧实例尚未释放锁，新实例若直接
-// 退出会导致“关掉却不重启”。因此 --relaunch 时放行，由旧实例退出后新实例正常接管。
 const gotLock = app.requestSingleInstanceLock();
-if (!gotLock && !process.argv.includes('--relaunch')) { app.quit(); }
+if (!gotLock) { app.quit(); }
 
 app.whenReady().then(() => {
   buildMenu();

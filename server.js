@@ -6,7 +6,9 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
-const { DATA_DIR, ROOTS, PORT, getDrive, SYSTEM_DRIVES } = require('./config');
+const config = require('./config');
+const { ROOTS, PORT, getDrive, SYSTEM_DRIVES } = config;
+let DATA_DIR = config.dataDir; // 数据目录（运行时可变，桌面端“设置”热切换数据目录时更新，无需重启进程）
 const { resolveWithin, isSystemDrive, isSystemDriveRoot, needSystemConfirm, safeName, COMPUTER_ROOT, COMPUTER_SENTINEL, HOME_ROOT, homePathFor } = require('./src/paths');
 const userCtx = require('./src/userctx');
 const recycle = require('./src/recycle');
@@ -66,8 +68,8 @@ let LETSENCRYPT_STAGING = false;
 // ACME 挑战端口 / HTTPS 端口（默认 80 / 443；绑定 80/443 通常需要管理员权限）
 const ACME_HTTP_PORT = parseInt(process.env.ACME_HTTP_PORT || '80', 10);
 const HTTPS_PORT = parseInt(process.env.HTTPS_PORT || '443', 10);
-const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
-const PREFS_FILE = path.join(DATA_DIR, 'prefs.json');
+let SETTINGS_FILE = path.join(config.dataDir, 'settings.json');
+let PREFS_FILE = path.join(config.dataDir, 'prefs.json');
 // 留存（存储清理）最近一次执行记录：{ runAt, versionsPruned, recyclePurged }，持久化以便前端展示
 let retentionLastRun = null;
 
@@ -221,7 +223,7 @@ function getHiddenMap(abs) {
 }
 
 auth.init(); // 初始化密码哈希（未配置则一次性生成初始密码）
-share.init(DATA_DIR); // 初始化共享链接存储
+share.init(config.dataDir); // 初始化共享链接存储
 
 // ---- 文件预览 / 编辑 支持的 MIME 与流式传输（含 Range 以支持视频拖动） ----
 function extOf(name) { const i = name.lastIndexOf('.'); return i >= 0 ? name.slice(i + 1).toLowerCase() : ''; }
@@ -567,7 +569,7 @@ function tryStat(p) { try { fs.statSync(p); return true; } catch (e) { return fa
 // 磁盘列表持久化缓存：枚举磁盘要 spawn PowerShell（约 1.6s），成本较高。
 // 把结果落盘，服务重启/被环境回收后立即可用，避免每次冷枚举造成“打开此电脑/WebDAV 根很慢”。
 const DRIVE_CACHE = { ts: 0, data: null, ttl: 15000 };
-const DRIVE_CACHE_FILE = path.join(DATA_DIR, '.drive_cache.json');
+let DRIVE_CACHE_FILE = path.join(config.dataDir, '.drive_cache.json');
 const DRIVE_CACHE_FILE_TTL = 60000; // 落盘缓存 60s 内复用（U 盘热插拔等罕见变更可接受）
 function loadDriveCacheFile() {
   try {
@@ -779,7 +781,7 @@ api.get('/download', async (req, res) => {
   if (!fs.existsSync(abs)) return res.status(404).json({ error: 'NOT_FOUND' });
   if (fs.statSync(abs).isDirectory()) {
     if (req.query.zip !== '1') return res.status(400).json({ error: 'IS_DIR' });
-    const tmp = path.join(DATA_DIR, 'tmp', Date.now() + '_' + path.basename(abs) + '.zip');
+    const tmp = path.join(config.dataDir, 'tmp', Date.now() + '_' + path.basename(abs) + '.zip');
     try { await archive.zipFolder(abs, tmp); }
     catch (e) { return res.status(500).json({ error: e.message }); }
     return res.download(tmp, path.basename(abs) + '.zip', (err) => { try { fs.unlinkSync(tmp); } catch (_) {} });
@@ -1052,7 +1054,7 @@ api.post('/download-selected', async (req, res) => {
   const absItems = items.map(p => resolveWithin(srcRoot, p)).filter(Boolean);
   if (absItems.some(a => needSystemConfirm(a, req))) return res.status(423).json({ error: 'SYSTEM_DRIVE_CONFIRM' });
   if (absItems.some(a => !fs.existsSync(a))) return res.status(404).json({ error: 'NOT_FOUND' });
-  const tmp = path.join(DATA_DIR, 'tmp', Date.now() + '_selected.zip');
+  const tmp = path.join(config.dataDir, 'tmp', Date.now() + '_selected.zip');
   try {
     await archive.zipItems(absItems.map(a => ({ abs: a, entryName: path.basename(a) })), tmp, {});
     res.download(tmp, 'selected_' + Date.now() + '.zip', (err) => { try { fs.unlinkSync(tmp); } catch (_) {} });
@@ -1145,7 +1147,7 @@ api.get('/info', (req, res) => {
   const user = req.user || {};
   res.json({
     username: user.username || null, role: user.role || null, isAdmin: user.role === 'admin',
-    dataDir: DATA_DIR, roots: auth.userRoots(user), system: SYSTEM_DRIVES, time: Date.now(),
+    dataDir: config.dataDir, roots: auth.userRoots(user), system: SYSTEM_DRIVES, time: Date.now(),
     hideWindowsHidden: HIDE_WINDOWS_HIDDEN, webdavEnabled: WEBDAV_ENABLED,
     versionsMaxAgeDays: VERSIONS_MAX_AGE_DAYS, recycleAutopurgeDays: RECYCLE_AUTOPURGE_DAYS,
     letsencryptEnabled: LETSENCRYPT_ENABLED, letsencryptDomains: LETSENCRYPT_DOMAINS,
@@ -1225,7 +1227,7 @@ api.post('/letsencrypt/request', (req, res) => {
 
 // ---- 管理：清空缩略图缓存 ----
 api.post('/admin/clear-thumbnails', (req, res) => {
-  const dir = path.join(DATA_DIR, 'thumbnails');
+  const dir = path.join(config.dataDir, 'thumbnails');
   try {
     let n = 0;
     for (const f of fs.readdirSync(dir)) { fs.unlinkSync(path.join(dir, f)); n++; }
@@ -1571,7 +1573,7 @@ api.get('/archive/preview-one', async (req, res) => {
   if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) return res.status(400).json({ error: 'NOT_AN_ARCHIVE' });
   const entry = req.query.entry;
   if (!entry) return res.status(400).json({ error: 'NO_ENTRY' });
-  const tmpDir = path.join(DATA_DIR, 'tmp', 'ap_' + Date.now() + '_' + crypto.randomBytes(3).toString('hex'));
+  const tmpDir = path.join(config.dataDir, 'tmp', 'ap_' + Date.now() + '_' + crypto.randomBytes(3).toString('hex'));
   fs.mkdirSync(tmpDir, { recursive: true });
   try {
     await archive.extractOne(abs, entry, tmpDir, { password: req.query.password || null });
@@ -1785,7 +1787,7 @@ function moveFile(from, to) {
 
 // ---- TUS 续传上传 ----
 // 先落到 DATA_DIR/uploads 临时，完成后移动到目标 root（仅“系统盘根目录本身”被兜底拒绝，其子目录允许）
-const tusStore = new FileStore({ directory: path.join(DATA_DIR, 'uploads') });
+let tusStore = new FileStore({ directory: path.join(config.dataDir, 'uploads') });
 const tusServer = new TusServer({
   path: '/api/upload',
   datastore: tusStore,
@@ -1797,12 +1799,12 @@ const tusServer = new TusServer({
     // 根目录隔离（安全）：上传目标必须属于当前用户被授权的根；__computer__ 仅 admin 可写
     const allowed = (user && auth.userRoots(user)) || [];
     if (!allowed.includes(rootKey) && !(rootKey === HOME_ROOT && allowed.includes(HOME_ROOT))) {
-      try { fs.unlinkSync(path.join(DATA_DIR, 'uploads', upload.id)); } catch (e) {}
+      try { fs.unlinkSync(path.join(config.dataDir, 'uploads', upload.id)); } catch (e) {}
       console.warn('[TUS] upload rejected (root not allowed):', rootKey, 'user=', user && user.username);
       return { res, status_code: 403, body: 'root not allowed' };
     }
     const dest = resolveWithin(rootKey, destSub, user); // 显式传入 user，解析 __home__ 到本人目录
-    const from = path.join(DATA_DIR, 'uploads', upload.id);
+    const from = path.join(config.dataDir, 'uploads', upload.id);
     // 仅禁止直接写到“系统盘根目录本身”（如 C:\），其下子目录（含个人主目录）允许上传；
     // 这样“只有 C 盘”的机器也能正常使用（个人空间位于 C:\<项目>\home，不再是系统盘根）。
     if (!dest || isSystemDriveRoot(dest)) {
@@ -1957,7 +1959,7 @@ function startServerListening() {
   server.listen(PORT, () => {
     initialListenDone = true;
     console.log('NasManager 已启动: ' + (server instanceof https.Server ? 'https' : 'http') + '://localhost:' + PORT);
-    console.log('DATA_DIR = ' + DATA_DIR + ' (盘符 ' + getDrive(DATA_DIR) + ')');
+    console.log('DATA_DIR = ' + config.dataDir + ' (盘符 ' + getDrive(config.dataDir) + ')');
     console.log('ROOTS    = ' + JSON.stringify(ROOTS));
     console.log('SYSTEM   = ' + JSON.stringify(SYSTEM_DRIVES));
     console.log('登录认证 = 强制开启 (用户名/密码 + scrypt 加盐哈希 + HttpOnly 会话)');
@@ -2035,6 +2037,32 @@ function reconfigure(opts) {
   return { ok: true, portChanged };
 }
 
+// 数据目录热切换（桌面端“设置”保存数据目录变更时调用，无需重启进程）：
+// 调用方需先把旧数据目录的全部内容迁移（拷贝）到新目录后，再调用本函数完成“重新挂载”。
+// 本函数仅更新路径并级联通知各子系统重载，不做文件搬运。
+function setDataDir(dir) {
+  dir = path.resolve(dir || config.dataDir);
+  if (dir === config.dataDir) return;
+  // 更新 config 源（各子系统读取 config.dataDir 即时生效）
+  config.setDataDir(dir);
+  // 更新本模块静态路径（指向新目录）
+  DATA_DIR = dir;
+  SETTINGS_FILE = path.join(dir, 'settings.json');
+  PREFS_FILE = path.join(dir, 'prefs.json');
+  DRIVE_CACHE_FILE = path.join(dir, '.drive_cache.json');
+  // 重新加载 settings / prefs（从新目录，迁移后应为既有数据）
+  loadPersistedSettings();
+  loadPrefs();
+  // 重建上传临时库（tus）指向新目录（进行中的上传会丢弃，罕见且可接受）
+  try { tusStore = new FileStore({ directory: path.join(dir, 'uploads') }); } catch (e) {}
+  // 级联切换子模块（各自重新挂载 + 重载）
+  try { auth.setDataDir(dir); } catch (e) { console.error('[NM] auth 数据目录切换失败: ' + e.message); }
+  try { share.init(dir); } catch (e) { console.error('[NM] share 数据目录切换失败: ' + e.message); }
+  try { search.setDataDir(dir); } catch (e) { console.error('[NM] search 数据目录切换失败: ' + e.message); }
+  try { thumbnails.setDataDir(dir); } catch (e) { console.error('[NM] thumbnails 数据目录切换失败: ' + e.message); }
+  console.log('[NM] 数据目录已热切换为 ' + dir);
+}
+
 // 定期清理已过期分享链接（每 60 秒一次），使其自动从分享管理中移除
 setInterval(() => {
   try { const n = share.pruneExpired(); if (n > 0) console.log('已清理过期分享链接 ' + n + ' 条'); } catch (e) {}
@@ -2094,4 +2122,4 @@ runRetention();
 setInterval(runRetention, 6 * 60 * 60 * 1000); // 每 6 小时执行一次
 
 // ===== Electron 桌面端热重载接口（仅作为模块导出；不影响 node server.js 独立运行） =====
-module.exports = { reconfigure, getPort: () => currentPort };
+module.exports = { reconfigure, getPort: () => currentPort, setDataDir };

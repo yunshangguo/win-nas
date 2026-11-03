@@ -29,11 +29,11 @@
       if (r && r.started) {
         $('status').textContent = '已保存，正在启动服务并打开主界面…';
       } else if (r && r.applied) {
-        $('status').textContent = r.portChanged
-          ? '已保存，端口已切换并重新加载界面（无需重启）'
-          : '已保存，设置已立即生效（无需重启）';
-      } else if (r && r.restarting) {
-        $('status').textContent = '数据目录已变更，程序即将重启以应用（凭据已迁移，不会丢账号）…';
+        $('status').textContent = r.dataDirChanged
+          ? '已保存，数据目录已在线迁移并切换（无需重启，账号不丢）'
+          : (r.portChanged
+            ? '已保存，端口已切换并重新加载界面（无需重启）'
+            : '已保存，设置已立即生效（无需重启）');
       }
     } catch (e) {
       $('status').textContent = '保存失败：' + e.message;

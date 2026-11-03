@@ -10,13 +10,14 @@
 // ============================================================================
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR, ROOTS } = require('../config');
+const config = require('../config');
+const { ROOTS } = config;
 const { COMPUTER_ROOT, HOME_ROOT, homePathFor } = require('./paths');
 const auth = require('./auth'); // 无循环依赖：auth 不依赖 search
 
-const INDEX_DIR = path.join(DATA_DIR, 'index');
+let INDEX_DIR = path.join(config.dataDir, 'index');
 fs.mkdirSync(INDEX_DIR, { recursive: true });
-const INDEX_FILE = path.join(INDEX_DIR, 'files.json');
+let INDEX_FILE = path.join(INDEX_DIR, 'files.json');
 const MAX_ENTRIES = 500000;        // 名称索引条目上限（MVP 防护）
 const WALK_DEPTH_MAX = 60;         // 递归深度上限
 const YIELD_EVERY = 1000;          // 每处理 N 个条目让出一次事件循环 + 节流休眠
@@ -40,6 +41,18 @@ let progress = { total: 0, done: 0 };
 let _listDrives = null;         // 由 server.js 注入，用于枚举“此电脑”所有盘
 
 function setListDrives(fn) { _listDrives = fn; }
+
+// 运行时热切换数据目录（桌面端“设置”保存数据目录变更时调用，无需重启进程）：
+// 更新索引文件位置并重新加载内存索引（迁移后通常已有 files.json；无则清空并后台重建）。
+function setDataDir(dir) {
+  config.setDataDir(dir);
+  INDEX_DIR = path.join(config.dataDir, 'index');
+  fs.mkdirSync(INDEX_DIR, { recursive: true });
+  INDEX_FILE = path.join(INDEX_DIR, 'files.json');
+  loadFromDisk();
+  // 若新目录下无索引，则后台异步重建（不影响当前请求）
+  if (!index.length) { try { buildIndexAsync(); } catch (e) {} }
+}
 
 function loadFromDisk() {
   try {
@@ -302,6 +315,6 @@ function findRootKeyFor(full) {
 loadFromDisk();
 
 module.exports = {
-  buildIndexAsync, buildIndex, query, searchContent, rebuildRoot, findRootKeyFor, setListDrives,
+  buildIndexAsync, buildIndex, query, searchContent, rebuildRoot, findRootKeyFor, setListDrives, setDataDir,
   getStatus: () => ({ building, lastBuild, progress, count: index.length })
 };
