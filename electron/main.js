@@ -13,7 +13,7 @@
 //  - 唯一的“桌面窗口”即主窗口，加载 http://127.0.0.1:<port>/ （即 WebUI）；
 //    另有独立“设置”窗口用于配置端口 / 账户 / 密码 / 数据目录 / 根目录。
 // ============================================================================
-const { app, BrowserWindow, Menu, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, Tray } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -24,24 +24,27 @@ const isDev = !app.isPackaged;
 const APP_DIR = app.getAppPath();
 
 // ---- 可写基目录（存放 settings.json 与默认 data 目录） ----
-function isWritable(dir) {
-  try {
-    const t = path.join(dir, '.nm_writable_test_' + crypto.randomBytes(4).toString('hex'));
-    fs.writeFileSync(t, '1');
-    fs.unlinkSync(t);
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
 function resolveBaseDir() {
   if (isDev) return app.getAppPath(); // 开发态：项目根（data/ 与 settings.json 落在项目内）
-  const exeDir = path.dirname(process.execPath);
-  if (isWritable(exeDir)) return exeDir; // 便携版：exe 所在目录可写则用其同目录
-  return app.getPath('userData');         // 否则落到用户数据目录（始终可写）
+  // 打包态：固定使用 userData（始终可写、且跨运行持久）。
+  // 便携版 exe 每次运行可能解压到临时/缓存目录，若把 settings.json 写在 exe 同目录，
+  // 重开时可能找不到 -> 被误判为首次运行而重新弹设置。userData 保证"关闭再打开仍是上次配置"。
+  return app.getPath('userData');
 }
 const BASE = resolveBaseDir();
 const SETTINGS_PATH = path.join(BASE, 'settings.json');
+
+// 一次性迁移：旧版本把 settings.json 写在 exe 同目录（便携版解压目录，可能不持久）。
+// 若 userData 里还没有 settings.json 而 exe 同目录有，则搬过来，避免升级后被迫重新设置一次。
+(function migrateOldSettings() {
+  try {
+    const oldPath = path.join(path.dirname(process.execPath), 'settings.json');
+    if (fs.existsSync(oldPath) && !fs.existsSync(SETTINGS_PATH)) {
+      fs.copyFileSync(oldPath, SETTINGS_PATH);
+      console.log('[NM] 已迁移旧设置: ' + oldPath + ' -> ' + SETTINGS_PATH);
+    }
+  } catch (e) { /* 迁移失败不影响启动 */ }
+})();
 
 // ---- 设置读写 ----
 function loadSettings() {
@@ -149,6 +152,45 @@ function waitServerThenLoad(win) {
   tryLoad();
 }
 
+// ---- 托盘（通知区域） ----
+// 常驻托盘图标：左键/双击打开主界面；右键菜单提供"打开主界面 / 设置(重新配置) / 退出"。
+// 图标随 electron/**/* 一起打包（asar 内），避免缺图标导致 Tray 崩溃。
+let tray = null;
+let reallyQuit = false; // 区分"真正退出"与"仅隐藏到托盘"
+
+function quitApp() {
+  reallyQuit = true;
+  if (tray) { try { tray.destroy(); } catch (e) {} tray = null; }
+  app.quit();
+}
+
+function showMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
+
+function createTray() {
+  if (tray) return;
+  try {
+    tray = new Tray(path.join(__dirname, 'tray-icon.png'));
+  } catch (e) {
+    console.error('[NM] 创建托盘失败（图标缺失?）:', e.message);
+    return;
+  }
+  tray.setToolTip('NasManager');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '打开主界面', click: () => showMainWindow() },
+    { label: '设置 / 重新配置', click: () => openSettings() },
+    { type: 'separator' },
+    { label: '退出', click: () => quitApp() }
+  ]));
+  tray.on('click', () => showMainWindow());
+  tray.on('double-click', () => showMainWindow());
+}
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1280, height: 840, minWidth: 900, minHeight: 600,
@@ -156,15 +198,38 @@ function createMainWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  // 关闭主窗口时询问：最小化到托盘继续运行，还是真正退出。
+  // 选最小化：只隐藏窗口、进程与后端服务保持运行（托盘图标常驻）。
+  mainWindow.on('close', (e) => {
+    if (reallyQuit) return; // 菜单/托盘里明确点了“退出”，放行真正关闭
+    e.preventDefault();
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: 'question',
+      buttons: ['最小化到托盘', '退出'],
+      defaultId: 0,
+      cancelId: 0, // 按 Esc 视为最小化，避免误退出
+      title: '关闭 NasManager',
+      message: '要最小化到系统托盘继续运行，还是退出程序？',
+      detail: '最小化后服务继续运行，可从任务栏通知区域的图标右键重新打开或重新配置。'
+    });
+    if (choice === 0) {
+      createTray();
+      mainWindow.hide();
+    } else {
+      quitApp();
+    }
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
   waitServerThenLoad(mainWindow);
 }
 
 function openSettings() {
   if (settingsWindow && !settingsWindow.isDestroyed()) { settingsWindow.focus(); return; }
+  // 主窗口隐藏（托盘模式）时不挂 parent，避免子窗口跟着隐藏或抢不到焦点
+  const parentOk = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible();
   settingsWindow = new BrowserWindow({
     width: 480, height: 580, resizable: false, title: 'NasManager 设置',
-    parent: mainWindow || undefined, modal: false, show: false,
+    parent: parentOk ? mainWindow : undefined, modal: false, show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
   });
   settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
@@ -248,7 +313,7 @@ function buildMenu() {
         { role: 'reload' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
-        { role: 'quit', label: '退出' }
+        { label: '退出', click: () => quitApp() }
       ]
     }
   ];
@@ -262,8 +327,9 @@ if (!gotLock) { app.quit(); }
 
 app.whenReady().then(() => {
   buildMenu();
+  createTray();
   if (fs.existsSync(SETTINGS_PATH)) {
-    // 已有设置：直接启动后端 + 主窗口
+    // 已有设置：直接启动后端 + 主窗口（仍是上次配置，直接可用，无需重新设置）
     startBackend();
     createMainWindow();
   } else {
@@ -271,11 +337,18 @@ app.whenReady().then(() => {
     openSettings();
   }
   app.on('second-instance', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
+    showMainWindow();
   });
   app.on('activate', () => {
     if (!mainWindow) { if (!fs.existsSync(SETTINGS_PATH)) openSettings(); else createMainWindow(); }
+    else showMainWindow();
   });
 });
 
-app.on('window-all-closed', () => { app.quit(); });
+app.on('window-all-closed', () => {
+  // 主窗口只是被隐藏到托盘时不会走到这里；走到这里说明所有窗口都真的关了，退出。
+  app.quit();
+});
+
+// 任何真正退出路径（菜单/托盘/系统关机）都放行窗口关闭，不弹"最小化"询问
+app.on('before-quit', () => { reallyQuit = true; });
