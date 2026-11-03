@@ -1,6 +1,6 @@
 {
   "name": "nas-file-manager",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Windows-native NAS-style file manager: TUS resumable upload, recycle-bin integration, system-drive guard, zip compress/extract with AES",
   "main": "electron/main.js",
