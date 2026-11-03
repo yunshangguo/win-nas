@@ -1897,6 +1897,8 @@ const keyPath = process.env.HTTPS_KEY;
 const tlsEnv = (certPath && keyPath && fs.existsSync(certPath) && fs.existsSync(keyPath))
   ? { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) } : null;
 let server = http.createServer(app);
+let currentPort = PORT;          // 运行时热切换端口用（初始等于启动端口）
+let initialListenDone = false;   // 首次成功监听后置 true；之后 EADDRINUSE 不再退出进程
 if (tlsEnv) {
   httpsServer = https.createServer(tlsEnv, app);
   httpsServer.on('error', (e) => console.error('[TLS] HTTPS server error:', e.message));
@@ -1940,14 +1942,20 @@ function startServerListening() {
   // 看门狗反复拉起形成“假死/卡顿”抖动（EADDRINUSE 多由重复实例抢占 5000 端口引起）。
   server.on('error', (err) => {
     if (err && err.code === 'EADDRINUSE') {
-      console.error('端口 ' + PORT + ' 已被占用（疑似重复实例），本进程退出，交由守护进程/看门狗重新拉起');
-      process.exit(1);
+      if (!initialListenDone) {
+        console.error('端口 ' + PORT + ' 已被占用（疑似重复实例），本进程退出，交由守护进程/看门狗重新拉起');
+        process.exit(1);
+      }
+      // 运行时热切换端口时目标端口被占用：不退出进程，交由 setPort 回退到原端口
+      console.error('[NM] 端口 ' + currentPort + ' 监听失败（可能被占用），保持当前端口');
+      return;
     }
     console.error('server error:', err);
     process.exit(1);
   });
 
   server.listen(PORT, () => {
+    initialListenDone = true;
     console.log('NasManager 已启动: ' + (server instanceof https.Server ? 'https' : 'http') + '://localhost:' + PORT);
     console.log('DATA_DIR = ' + DATA_DIR + ' (盘符 ' + getDrive(DATA_DIR) + ')');
     console.log('ROOTS    = ' + JSON.stringify(ROOTS));
@@ -1971,6 +1979,60 @@ function startServerListening() {
     // 启动 Let's Encrypt 挑战服务器与（已有证书时）HTTPS 服务
     setTimeout(() => { try { applyLetsEncrypt(); } catch (e) {} }, 800);
   });
+}
+
+// ===== 运行时热重载配置（Electron 桌面端“设置”保存后调用，无需重启进程） =====
+// 端口热切换：关闭旧监听、在新端口重新监听；若新端口被占用则自动回退到原端口（不退出进程）。
+function setPort(p) {
+  p = parseInt(p, 10) || 8080;
+  const prev = currentPort;
+  if (p === prev) return;
+  let settled = false;
+  const listenOn = (port, isRevert) => {
+    try { server.closeAllConnections(); } catch (e) { /* 旧 node 无此方法，忽略 */ }
+    server.close(() => {
+      try {
+        server.listen(port, () => {
+          settled = true;
+          currentPort = port;
+          console.log('[NM] 端口已热切换为 ' + port);
+        });
+      } catch (e) {
+        if (isRevert) console.error('[NM] 回退端口 ' + port + ' 失败: ' + e.message);
+        else listenOn(prev, true);
+      }
+    });
+  };
+  // 目标端口被占用时回退到原端口
+  server.once('error', (err) => {
+    if (err && err.code === 'EADDRINUSE' && !settled) {
+      console.error('[NM] 新端口 ' + p + ' 被占用，回退到 ' + prev);
+      listenOn(prev, true);
+    }
+  });
+  listenOn(p, false);
+  // 兜底：若 close 回调迟迟不触发（尚有长连接），3 秒后强制在新端口监听
+  setTimeout(() => { if (!settled && !server.listening) listenOn(p, false); }, 3000);
+}
+
+// 根目录热更新（委托 config.setRoots，原地替换 ROOTS 对象）
+function setRootsStr(str) {
+  try { require('./config').setRoots(str); console.log('[NM] 根目录已热更新'); }
+  catch (e) { console.error('[NM] 根目录热更新失败: ' + e.message); }
+}
+
+// 桌面端保存设置后调用：端口 / 账户 / 密码 / 根目录热生效，不重启进程。
+// 返回 { ok, portChanged }；portChanged 为 true 时 Electron 侧重载主窗口到新端口。
+function reconfigure(opts) {
+  opts = opts || {};
+  let portChanged = false;
+  if (opts.port && Number(opts.port) !== currentPort) { setPort(opts.port); portChanged = true; }
+  if (opts.roots !== undefined) setRootsStr(opts.roots);
+  if (opts.authUsername !== undefined || opts.password) {
+    try { auth.reconfigureAdmin({ username: opts.authUsername, password: opts.password }); }
+    catch (e) { console.error('[NM] 账户/密码热更新失败: ' + e.message); }
+  }
+  return { ok: true, portChanged };
 }
 
 // 定期清理已过期分享链接（每 60 秒一次），使其自动从分享管理中移除
@@ -2030,3 +2092,6 @@ async function runRetention() {
 }
 runRetention();
 setInterval(runRetention, 6 * 60 * 60 * 1000); // 每 6 小时执行一次
+
+// ===== Electron 桌面端热重载接口（仅作为模块导出；不影响 node server.js 独立运行） =====
+module.exports = { reconfigure, getPort: () => currentPort };

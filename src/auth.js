@@ -32,10 +32,10 @@ const USERS_FILE = path.join(SECRET_DIR, 'users.json');
 // 历史遗留：用户改过密码时落盘的覆盖哈希（仅用于迁移到管理员账户）
 const PASSWORD_OVERRIDE = path.join(SECRET_DIR, 'password.override');
 
-// 引导管理员用户名（来自 env，缺省 admin）
-const ADMIN_USERNAME = (process.env.AUTH_USERNAME || 'admin').trim();
+// 引导管理员用户名（来自 env，缺省 admin）；运行时可改名，故用 let
+let ADMIN_USERNAME = (process.env.AUTH_USERNAME || 'admin').trim();
 
-const USERNAME = ADMIN_USERNAME; // 向后兼容导出（= 引导管理员名）
+let USERNAME = ADMIN_USERNAME; // 向后兼容导出（= 引导管理员名）
 
 // 会话有效期：12 小时，每次活动刷新（防长期挂机被复用）
 const SESSION_TTL = 1000 * 60 * 60 * 12;
@@ -187,6 +187,38 @@ function applyPendingPassword() {
 }
 
 function init() { loadUsers(); applyPendingPassword(); }
+
+// 运行时热更新管理员凭据（桌面端“设置”保存后调用，无需重启进程）。
+// - username 可改名（重命名管理员条目，同时更新引导名，使后续启动一致）；
+// - password 可改密（直接覆盖哈希），并使管理员现有会话失效，强制用新密码重新登录。
+function reconfigureAdmin(opts) {
+  opts = opts || {};
+  let changed = false;
+  const newName = (opts.username || '').trim();
+  if (newName && newName !== ADMIN_USERNAME && isValidUsername(newName)) {
+    let admin = _users[ADMIN_USERNAME] || Object.values(_users).find(u => u.role === 'admin');
+    if (admin) {
+      delete _users[admin.username];
+      admin.username = newName;
+      _users[newName] = normalizeUser(admin);
+    }
+    ADMIN_USERNAME = newName;
+    USERNAME = newName;
+    changed = true;
+  }
+  if (opts.password && String(opts.password).trim()) {
+    const h = normalizePasswordInput(String(opts.password).trim());
+    let admin = _users[ADMIN_USERNAME] || Object.values(_users).find(u => u.role === 'admin');
+    if (admin) {
+      admin.passwordHash = h;
+      _users[admin.username] = normalizeUser(admin);
+    }
+    revokeUserSessions(ADMIN_USERNAME); // 改密后旧会话失效
+    changed = true;
+  }
+  if (changed) persistUsers();
+  return { ok: true, changed };
+}
 
 // 校验登录凭据，成功返回用户记录（含 username），失败返回 null
 function verifyLogin(body) {
@@ -345,7 +377,9 @@ function setOwnPassword(username, oldHash, newHash) {
 }
 
 module.exports = {
-  USERNAME, SESSION_TTL, init, verifyLogin, createSession, getSession, destroySession,
+  SESSION_TTL, init, verifyLogin, createSession, getSession, destroySession,
   getUser, publicUser, userRoots, hasPerm, listUsers, createUser, updateUser, deleteUser,
-  setOwnPassword, revokeUserSessions
+  setOwnPassword, revokeUserSessions, reconfigureAdmin
 };
+// USERNAME 为可改名的管理员引导名，用 getter 暴露以保证重命名后外部读取即时生效
+Object.defineProperty(module.exports, 'USERNAME', { enumerable: true, get: () => USERNAME });

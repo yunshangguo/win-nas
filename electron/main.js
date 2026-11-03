@@ -82,17 +82,33 @@ function writePendingPassword(pwd) {
 
 // ---- 启动后端（主进程内 require server.js） ----
 let serverStarted = false;
+let backendModule = null; // 缓存 server.js 模块，供运行时热重载调用
 function startBackend() {
   if (serverStarted) return;
   applyEnvFromSettings();
   try {
-    require(path.join(APP_DIR, 'server.js'));
+    backendModule = require(path.join(APP_DIR, 'server.js'));
     serverStarted = true;
     console.log('[NM] 后端已随桌面程序启动');
   } catch (e) {
     console.error('[NM] 启动后端失败:', (e && e.stack) || e);
     dialog.showErrorBox('NasManager 启动失败', String((e && e.message) || e));
   }
+}
+
+// 数据目录变更时，把旧目录下的凭据（盐值/用户表/会话/password.plain 等）迁移到新目录，
+// 保证重启后账号不丢、密码生效。仅复制新目录尚不存在的文件，避免覆盖。
+function migrateSecrets(oldDir, newDir) {
+  try {
+    const src = path.join(oldDir, 'secrets');
+    const dst = path.join(newDir, 'secrets');
+    fs.mkdirSync(newDir, { recursive: true });
+    fs.mkdirSync(dst, { recursive: true });
+    for (const f of ['auth.salt', 'users.json', 'sessions.json', 'password.override', 'password.plain']) {
+      const sf = path.join(src, f), df = path.join(dst, f);
+      if (fs.existsSync(sf) && !fs.existsSync(df)) { try { fs.copyFileSync(sf, df); } catch (e) {} }
+    }
+  } catch (e) { console.error('[NM] 凭据迁移失败（新数据目录将重新播种管理员）:', e.message); }
 }
 
 // ---- 窗口 ----
@@ -159,25 +175,45 @@ ipcMain.handle('get-settings', () => ({
 }));
 
 ipcMain.handle('save-settings', (e, data) => {
+  // 改动前的数据目录（用于判断是否为结构性变更，需要重启）
+  const prevDataDir = settings.dataDir;
   settings.port = parseInt(data.port, 10) || 8080;
   settings.authUsername = (data.authUsername || 'admin').trim() || 'admin';
   settings.dataDir = (data.dataDir || path.join(BASE, 'data')).trim();
   settings.roots = (data.roots || '').trim();
   persistSettings();
-  // 新密码必须立即落盘为一次性明文文件（password.plain），由 auth 模块在“启动/下次启动”时哈希入库并删除。
-  if (data.password && String(data.password).trim()) writePendingPassword(String(data.password).trim());
+  const newPassword = (data.password && String(data.password).trim()) ? String(data.password).trim() : null;
+
   if (!serverStarted) {
     // 首次运行：后端尚未启动，直接以刚保存的设置启动后端并进入主界面——无需重启。
+    // 新密码落一次性明文文件（password.plain），由 auth 模块在启动时哈希入库并删除。
+    if (newPassword) writePendingPassword(newPassword);
     startBackend();
     createMainWindow();
     if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();
     return { ok: true, started: true };
   }
-  // 运行中修改设置：端口 / 账户 / 数据目录变更需重启后端以生效。
-  // 用 Electron 官方 app.relaunch() 重启——它在旧实例完全退出后才拉起新实例，
-  // 规避便携版单文件下 process.execPath 指向临时解压目录、直接 spawn 静默失败的问题；
-  // 新实例在旧实例释放单实例锁之后才启动，从根上消除“关掉却不重启”的竞态。
-  // 仍带 --relaunch 标记兜底：万一新实例在锁释放前抢跑，也不会因拿不到锁而自杀。
+
+  // 运行中且数据目录未变更：热重载，进程不退出、窗口不关，立即生效。
+  if (settings.dataDir === prevDataDir) {
+    const res = backendModule.reconfigure({
+      port: settings.port,
+      roots: settings.roots,
+      authUsername: settings.authUsername,
+      password: newPassword // 直接交给 auth 模块更新哈希，不落明文文件
+    });
+    if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();
+    // 端口变了则把主窗口重新加载到新端口（仅刷新页面，不重启进程）
+    if (res && res.portChanged && mainWindow && !mainWindow.isDestroyed()) {
+      waitServerThenLoad(mainWindow);
+    }
+    return { ok: true, applied: true, portChanged: !!(res && res.portChanged) };
+  }
+
+  // 数据目录变更：结构性变更，需重启进程以切换数据存放位置。
+  // 先迁移凭据到新目录（不丢账号），新密码同样落 password.plain 供重启后消费。
+  if (newPassword) writePendingPassword(newPassword);
+  migrateSecrets(prevDataDir, settings.dataDir);
   setTimeout(() => {
     const args = process.argv.slice(1).filter(a => a !== '--relaunch').concat(['--relaunch']);
     app.relaunch({ args });

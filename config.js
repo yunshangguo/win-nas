@@ -93,4 +93,18 @@ for (const [k, v] of Object.entries(ROOTS)) {
   }
 }
 
-module.exports = { DATA_DIR, dataDrive, SYSTEM_DRIVES, ROOTS, PORT, SUBDIRS, getDrive, USER_HOME_BASE };
+// 运行时热更新根目录（Electron 桌面端“设置”保存后调用，无需重启进程）。
+// ROOTS 是已导出的对象，这里原地清空再重新填充，使所有已捕获该引用的模块即时生效。
+function setRoots(str) {
+  for (const k of Object.keys(ROOTS)) delete ROOTS[k];
+  const rootsRaw = str || '';
+  for (const part of rootsRaw.split(/[;,]/)) {
+    const m = part.match(/^\s*([^:]+):(.*)$/);
+    if (m) ROOTS[m[1].trim()] = path.resolve(m[2].trim());
+  }
+  for (const [k, v] of Object.entries(ROOTS)) {
+    if (!fs.existsSync(v)) { try { fs.mkdirSync(v, { recursive: true }); } catch (e) { /* 运行时再报 */ } }
+  }
+}
+
+module.exports = { DATA_DIR, dataDrive, SYSTEM_DRIVES, ROOTS, PORT, SUBDIRS, getDrive, USER_HOME_BASE, setRoots };
