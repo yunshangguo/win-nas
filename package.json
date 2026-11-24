@@ -48,6 +48,7 @@
     "archiver": "^6.0.1",
     "archiver-zip-encrypted": "^1.0.5",
     "express": "^4.19.2",
+    "ffmpeg-static": "^5.3.0",
     "html-to-docx": "^1.8.0",
     "mammoth": "^1.8.0",
     "sharp": "^0.33.5",
