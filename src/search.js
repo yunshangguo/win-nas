@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const { ROOTS } = config;
-const { COMPUTER_ROOT, HOME_ROOT, homePathFor } = require('./paths');
+const { COMPUTER_ROOT, HOME_ROOT, homePathFor, shouldSkipDir } = require('./paths');
 const auth = require('./auth'); // 无循环依赖：auth 不依赖 search
 
 let INDEX_DIR = path.join(config.dataDir, 'index');
@@ -89,6 +89,8 @@ async function walkDir(dir, depth, state, visitor) {
   catch (e) { return; }
   for (const d of entries) {
     if (state.aborted) return;
+    // 跳过 Windows 系统保护目录（System Volume Information / $ 开头），不抓取、不索引
+    if (shouldSkipDir(d.name)) continue;
     const full = path.join(dir, d.name);
     const isDir = d.isDirectory();
     let size = 0, mtime = 0;

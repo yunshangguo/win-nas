@@ -9,7 +9,7 @@ const net = require('net');
 const config = require('./config');
 const { ROOTS, PORT, getDrive, SYSTEM_DRIVES } = config;
 let DATA_DIR = config.dataDir; // 数据目录（运行时可变，桌面端“设置”热切换数据目录时更新，无需重启进程）
-const { resolveWithin, isSystemDrive, isSystemDriveRoot, needSystemConfirm, safeName, COMPUTER_ROOT, COMPUTER_SENTINEL, HOME_ROOT, homePathFor } = require('./src/paths');
+const { resolveWithin, isSystemDrive, isSystemDriveRoot, needSystemConfirm, safeName, shouldSkipDir, COMPUTER_ROOT, COMPUTER_SENTINEL, HOME_ROOT, homePathFor } = require('./src/paths');
 const userCtx = require('./src/userctx');
 const recycle = require('./src/recycle');
 const thumbnails = require('./src/thumbnails');
@@ -601,7 +601,9 @@ function enumDrivesWin() {
   let raw = null;
   // 优先 PowerShell（Win11 已移除 wmic 的稳妥方案）
   try {
-    const ps = 'Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,DriveType,VolumeName,Size,FreeSpace | ConvertTo-Json -Compress';
+    // [Console]::OutputEncoding 必须设为 UTF-8：Windows PowerShell 5.1 默认按系统 ANSI(GBK) 输出，
+    // 中文卷标（如“新加卷”）会被 Node 以 utf8 解码成乱码。显式指定后 stdout 为 UTF-8 字节流。
+    const ps = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,DriveType,VolumeName,Size,FreeSpace | ConvertTo-Json -Compress';
     raw = execSync('powershell -NoProfile -Command "' + ps + '"', { windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: 15000 }).toString('utf8');
   } catch (e) { raw = null; }
   // 回退 wmic（较旧系统）
@@ -686,7 +688,9 @@ api.get('/list', (req, res) => {
   try {
     const showHidden = req.query.showHidden === '1';
     const hiddenMap = getHiddenMap(abs);
-    let entries = fs.readdirSync(abs, { withFileTypes: true }).map(d => {
+    let entries = fs.readdirSync(abs, { withFileTypes: true })
+      // 跳过 Windows 系统保护目录（System Volume Information / $ 开头），不列举也不 stat（无权限且会卡）
+      .filter(d => !shouldSkipDir(d.name)).map(d => {
       const full = path.join(abs, d.name);
       let size = 0, mtime = '';
       try { const st = fs.statSync(full); size = st.size; mtime = st.mtimeMs; } catch (e) {}
@@ -734,7 +738,7 @@ api.get('/stat', (req, res) => {
     try { st = fs.statSync(p); } catch (e) { return; }
     if (st.isDirectory()) {
       let ents; try { ents = fs.readdirSync(p); } catch (e) { return; }
-      for (const d of ents) walk(path.join(p, d));
+      for (const d of ents) { if (shouldSkipDir(d)) continue; walk(path.join(p, d)); }
     } else { size += st.size; count++; }
   })(abs);
   res.json({ absolute: abs, size, count });
@@ -1639,7 +1643,7 @@ app.use('/api', api);
 
 // ===== WebDAV（HTTP Basic 认证；暴露“此电脑”全部磁盘，可直接挂载为网络驱动器） =====
 // 可在“设置”里开关：关闭后 /dav 停止响应，无法挂载为网络磁盘（无需重启服务，即时生效）。
-const webdav = require('./src/webdav')({ resolveWithin, COMPUTER_ROOT, COMPUTER_SENTINEL, listDrives, auth, mimeOf });
+const webdav = require('./src/webdav')({ resolveWithin, COMPUTER_ROOT, COMPUTER_SENTINEL, listDrives, auth, mimeOf, shouldSkipDir });
 function handleDav(req, res) {
   if (!WEBDAV_ENABLED) { res.status(404).send('WebDAV 已禁用'); return; }
   webdav(req, res);
@@ -1712,7 +1716,7 @@ function netdiskFilePage(rec, abs) {
 }
 function shareFolderHtml(rec, target, sub) {
   let entries = [];
-  try { entries = fs.readdirSync(target, { withFileTypes: true }).map(d => ({ name: d.name, isDir: d.isDirectory() })); } catch (e) {}
+  try { entries = fs.readdirSync(target, { withFileTypes: true }).filter(d => !shouldSkipDir(d.name)).map(d => ({ name: d.name, isDir: d.isDirectory() })); } catch (e) {}
   entries.sort((a, b) => (b.isDir ? 1 : 0) - (a.isDir ? 1 : 0) || a.name.localeCompare(b.name));
   const base = '/s/' + rec.token;
   const rows = entries.map(e => {
@@ -1964,6 +1968,7 @@ function startServerListening() {
     console.log('SYSTEM   = ' + JSON.stringify(SYSTEM_DRIVES));
     console.log('登录认证 = 强制开启 (用户名/密码 + scrypt 加盐哈希 + HttpOnly 会话)');
     console.log('缩略图引擎 sharp = ' + (thumbnails.hasSharp ? '已加载' : '未安装(图像缩略图降级)') +
+      ' | ffmpeg = ' + (thumbnails.hasFfmpeg ? '已加载(' + thumbnails.ffmpegPath + ')' : '未安装(视频缩略图降级)') +
       ' | 搜索内存索引条目 = ' + search.getStatus().count);
     // 预热带：启动后立刻枚举一次磁盘并写入缓存，避免首个“此电脑”/WebDAV 根请求触发冷枚举（~1.6s）；
     // 同时落盘缓存（.drive_cache.json），服务被环境回收重启后也能秒级回暖。

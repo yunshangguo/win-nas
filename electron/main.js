@@ -23,25 +23,66 @@ const isDev = !app.isPackaged;
 // 应用目录：开发态=项目根；打包态=app.asar 根（server.js / src / public 都在此）
 const APP_DIR = app.getAppPath();
 
+// ---- 全局兜底：绝不让未捕获异常弹出原生 Error 模态框 ----
+// Electron 默认的 "A JavaScript error occurred in the main process" 对话框是模态的，
+// 会把主进程事件循环卡死（表现为端口在监听但所有请求超时、界面假死）。
+// 网络瞬断（ECONNRESET/EPIPE/ECONNREFUSED 等）在此类探测里属正常现象，记录日志即可。
+function safeErrLog(tag, err) {
+  try { console.error('[NM] ' + tag + ':', (err && err.stack) || err); } catch (e) {}
+}
+process.on('uncaughtException', (err) => {
+  safeErrLog('uncaughtException', err);
+  // 非网络类的未知异常也不弹框，避免主进程被模态框锁死；托盘仍可退出。
+});
+process.on('unhandledRejection', (err) => safeErrLog('unhandledRejection', err));
+
+// ---- 便携版 EXE 真实路径 ----
+// electron-builder portable 启动时会把原始 EXE 路径写入 PORTABLE_EXECUTABLE_FILE；
+// 此时 process.execPath 指向临时解压目录里的 exe，既不能用于开机自启，也不能用于落盘。
+function portableExePath() {
+  return process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+}
+function portableExeDir() {
+  return path.dirname(portableExePath());
+}
+function isDirWritable(p) {
+  try {
+    fs.mkdirSync(p, { recursive: true });
+    const probe = path.join(p, '.write-test-' + process.pid);
+    fs.writeFileSync(probe, 'ok');
+    fs.unlinkSync(probe);
+    return true;
+  } catch (e) { return false; }
+}
+
 // ---- 可写基目录（存放 settings.json 与默认 data 目录） ----
+// 打包态优先落在"原始 EXE 所在文件夹"，保证关掉再打开仍是同一份配置、数据也在 EXE 旁边。
+// 只有该目录不可写（例如放进 Program Files）时才退回 userData。
 function resolveBaseDir() {
   if (isDev) return app.getAppPath(); // 开发态：项目根（data/ 与 settings.json 落在项目内）
-  // 打包态：固定使用 userData（始终可写、且跨运行持久）。
-  // 便携版 exe 每次运行可能解压到临时/缓存目录，若把 settings.json 写在 exe 同目录，
-  // 重开时可能找不到 -> 被误判为首次运行而重新弹设置。userData 保证"关闭再打开仍是上次配置"。
+  const besideExe = portableExeDir();
+  if (isDirWritable(besideExe)) return besideExe;
   return app.getPath('userData');
 }
 const BASE = resolveBaseDir();
 const SETTINGS_PATH = path.join(BASE, 'settings.json');
 
-// 一次性迁移：旧版本把 settings.json 写在 exe 同目录（便携版解压目录，可能不持久）。
-// 若 userData 里还没有 settings.json 而 exe 同目录有，则搬过来，避免升级后被迫重新设置一次。
+// 一次性迁移：旧版本把 settings.json 写在 userData 或临时解压目录。
+// 若 EXE 同目录还没有 settings.json 而旧位置有，则搬过来，避免升级后被迫重新设置一次。
 (function migrateOldSettings() {
   try {
-    const oldPath = path.join(path.dirname(process.execPath), 'settings.json');
-    if (fs.existsSync(oldPath) && !fs.existsSync(SETTINGS_PATH)) {
-      fs.copyFileSync(oldPath, SETTINGS_PATH);
-      console.log('[NM] 已迁移旧设置: ' + oldPath + ' -> ' + SETTINGS_PATH);
+    if (isDev || fs.existsSync(SETTINGS_PATH)) return;
+    const candidates = [
+      path.join(portableExeDir(), 'settings.json'),
+      path.join(app.getPath('userData'), 'settings.json'),
+      path.join(path.dirname(process.execPath), 'settings.json')
+    ];
+    for (const oldPath of candidates) {
+      if (oldPath !== SETTINGS_PATH && fs.existsSync(oldPath)) {
+        fs.copyFileSync(oldPath, SETTINGS_PATH);
+        console.log('[NM] 已迁移旧设置: ' + oldPath + ' -> ' + SETTINGS_PATH);
+        break;
+      }
     }
   } catch (e) { /* 迁移失败不影响启动 */ }
 })();
@@ -63,6 +104,40 @@ function persistSettings() {
     fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
   } catch (e) {
     console.error('[NM] 保存设置失败:', e.message);
+  }
+}
+
+// ---- 开机自启动（注册表 HKCU Run，仅当前用户，不需要管理员权限） ----
+// 便携版必须显式传入原始 EXE 路径，否则注册的是临时解压目录的 exe，重启后就失效。
+function loginArgs() {
+  // 便携版自己带一个标记参数：开机拉起时据此只驻留托盘、不弹主窗口，
+  // 不依赖 Electron 在各版本间不一致的 wasOpenedAtLogin 行为。
+  return ['--nm-autostart'];
+}
+function getAutostart() {
+  // 必须带同一 path/args 查询：setLoginItemSettings 指定了自定义 path 时，
+  // 不带参数的 getLoginItemSettings 查的是临时解压 exe，会误报“未开启”。
+  try {
+    return !!app.getLoginItemSettings({ path: portableExePath(), args: loginArgs() }).openAtLogin;
+  } catch (e) { return false; }
+}
+function getOpenedAtLogin() {
+  try {
+    if (process.argv.includes('--nm-autostart')) return true;
+    return !!app.getLoginItemSettings().wasOpenedAtLogin;
+  } catch (e) { return false; }
+}
+function setAutostart(enabled) {
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: !!enabled,
+      path: portableExePath(),
+      args: loginArgs()
+    });
+    return { ok: true, enabled: !!enabled, path: portableExePath() };
+  } catch (e) {
+    console.error('[NM] 设置开机自启失败:', e.message);
+    return { ok: false, error: e.message };
   }
 }
 
@@ -131,22 +206,26 @@ function waitServerThenLoad(win) {
   let attempt = 0;
   const tryLoad = () => {
     const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 1500 }, (res) => {
-      res.destroy();
+      // 不直接 res.destroy()：后端返回 302 时掐断连接会触发 socket ECONNRESET，
+      // 该 error 事件挂在响应对象上、旧代码未监听 → 未捕获异常 → Electron 弹 Error 框卡死主进程。
+      // resume() 安全排空响应体，并监听其 error，确保任何网络抖动都被吞掉。
+      res.on('error', () => {});
+      res.resume();
       if (win && !win.isDestroyed()) win.loadURL(url);
     });
+    const showFailure = (msg) => {
+      if (!win || win.isDestroyed()) return;
+      win.loadURL('data:text/html,<meta charset=utf-8><h2 style="font-family:sans-serif;padding:24px">' + msg + '</h2>');
+      if (openedAtLogin) win.show(); // 自启静默模式下出错才弹窗提示，否则用户看不到
+    };
     req.on('error', () => {
       if (attempt < 80) { attempt++; setTimeout(tryLoad, 500); }
-      else if (win && !win.isDestroyed()) {
-        win.loadURL('data:text/html,<meta charset=utf-8><h2 style="font-family:sans-serif;padding:24px">' +
-          '服务启动失败，请检查“设置”中的端口是否被占用，或数据目录是否可写。</h2>');
-      }
+      else showFailure('服务启动失败，请检查“设置”中的端口是否被占用，或数据目录是否可写。');
     });
     req.on('timeout', () => {
       req.destroy();
       if (attempt < 80) { attempt++; setTimeout(tryLoad, 500); }
-      else if (win && !win.isDestroyed()) {
-        win.loadURL('data:text/html,<meta charset=utf-8><h2 style="font-family:sans-serif;padding:24px">服务启动超时，请检查设置。</h2>');
-      }
+      else showFailure('服务启动超时，请检查设置。');
     });
   };
   tryLoad();
@@ -157,6 +236,8 @@ function waitServerThenLoad(win) {
 // 图标随 electron/**/* 一起打包（asar 内），避免缺图标导致 Tray 崩溃。
 let tray = null;
 let reallyQuit = false; // 区分"真正退出"与"仅隐藏到托盘"
+// 开机自启拉起时只驻留托盘，不自动弹主窗口；手动双击则正常显示。
+const openedAtLogin = getOpenedAtLogin();
 
 function quitApp() {
   reallyQuit = true;
@@ -172,21 +253,40 @@ function showMainWindow() {
   }
 }
 
+function buildTrayMenu() {
+  return Menu.buildFromTemplate([
+    { label: '打开主界面', click: () => showMainWindow() },
+    { label: '设置 / 重新配置', click: () => openSettings() },
+    {
+      label: '开机自启动', type: 'checkbox', checked: getAutostart(),
+      click: (item) => {
+        const r = setAutostart(item.checked);
+        if (!r.ok) {
+          item.checked = !item.checked;
+          dialog.showErrorBox('设置开机自启失败', r.error || '未知错误');
+        } else {
+          try { tray.setToolTip('NasManager' + (item.checked ? '（开机自启）' : '')); } catch (e) {}
+        }
+      }
+    },
+    { type: 'separator' },
+    { label: '退出', click: () => quitApp() }
+  ]);
+}
+function refreshTrayMenu() {
+  if (!tray) return;
+  try { tray.setContextMenu(buildTrayMenu()); } catch (e) {}
+}
 function createTray() {
-  if (tray) return;
+  if (tray) { refreshTrayMenu(); return; }
   try {
     tray = new Tray(path.join(__dirname, 'tray-icon.png'));
   } catch (e) {
     console.error('[NM] 创建托盘失败（图标缺失?）:', e.message);
     return;
   }
-  tray.setToolTip('NasManager');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开主界面', click: () => showMainWindow() },
-    { label: '设置 / 重新配置', click: () => openSettings() },
-    { type: 'separator' },
-    { label: '退出', click: () => quitApp() }
-  ]));
+  tray.setToolTip('NasManager' + (getAutostart() ? '（开机自启）' : ''));
+  refreshTrayMenu();
   tray.on('click', () => showMainWindow());
   tray.on('double-click', () => showMainWindow());
 }
@@ -197,7 +297,7 @@ function createMainWindow() {
     title: 'NasManager', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
   });
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  if (!openedAtLogin) mainWindow.once('ready-to-show', () => mainWindow.show());
   // 关闭主窗口时询问：最小化到托盘继续运行，还是真正退出。
   // 选最小化：只隐藏窗口、进程与后端服务保持运行（托盘图标常驻）。
   mainWindow.on('close', (e) => {
@@ -245,7 +345,20 @@ ipcMain.handle('get-settings', () => ({
   roots: settings.roots
 }));
 
+ipcMain.handle('get-autostart', () => ({ enabled: getAutostart(), path: portableExePath() }));
+ipcMain.handle('set-autostart', (e, enabled) => {
+  const r = setAutostart(enabled);
+  refreshTrayMenu();
+  return r;
+});
+
 ipcMain.handle('save-settings', (e, data) => {
+  // 开机自启独立存于注册表，与 settings.json 无关；设置窗口勾选后立即生效
+  if (typeof data.autostart === 'boolean') {
+    const ar = setAutostart(data.autostart);
+    if (!ar.ok) console.error('[NM] 开机自启设置失败:', ar.error);
+    refreshTrayMenu();
+  }
   // 改动前的数据目录（用于判断是否为结构性变更，需要重启）
   const prevDataDir = settings.dataDir;
   settings.port = parseInt(data.port, 10) || 8080;

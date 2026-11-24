@@ -4,5 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('nmSettings', {
   get: () => ipcRenderer.invoke('get-settings'),
-  save: (data) => ipcRenderer.invoke('save-settings', data)
+  save: (data) => ipcRenderer.invoke('save-settings', data),
+  getAutostart: () => ipcRenderer.invoke('get-autostart'),
+  setAutostart: (enabled) => ipcRenderer.invoke('set-autostart', enabled)
 });

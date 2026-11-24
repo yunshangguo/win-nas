@@ -21,6 +21,10 @@
       font-size: 13px; background: #fff; outline: none;
     }
     input:focus { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(47,111,237,.15); }
+    .check-row { display: flex; align-items: center; gap: 8px; }
+    .check-row input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--blue); cursor: pointer; }
+    .check-row label { margin: 0; font-weight: 600; cursor: pointer; }
+    #exePath { word-break: break-all; }
     #save {
       margin-top: 6px; width: 100%; padding: 10px; border: none; border-radius: 6px;
       background: var(--blue); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
@@ -31,7 +35,7 @@
 </head>
 <body>
   <h1>NasManager 设置</h1>
-  <p class="sub">配置后程序会重启以应用新设置。设置保存在程序数据目录的 settings.json。</p>
+  <p class="sub">设置即时生效，无需重启。配置保存在 EXE 同目录的 settings.json。</p>
 
   <div class="field">
     <label for="port">服务端口 (Port)</label>
@@ -63,7 +67,15 @@
     <div class="hint">对外暴露的文件根，格式 key:绝对路径，多个用分号分隔。留空则仅“此电脑 + 个人空间”。</div>
   </div>
 
-  <button id="save">保存并重启服务</button>
+  <div class="field">
+    <div class="check-row">
+      <input id="autostart" type="checkbox" disabled />
+      <label for="autostart">开机自动启动</label>
+    </div>
+    <div class="hint">勾选后登录 Windows 时自动在后台运行（只显示右下角托盘图标，不弹主窗口）。自启指向：<span id="exePath">读取中…</span></div>
+  </div>
+
+  <button id="save">保存设置</button>
   <div id="status"></div>
 
   <script src="settings.js"></script>

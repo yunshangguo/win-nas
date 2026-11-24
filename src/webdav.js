@@ -12,7 +12,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 // 工厂函数：由 server.js 注入依赖，避免重复引入与代码重复。
-module.exports = function createWebdav({ resolveWithin, COMPUTER_ROOT, COMPUTER_SENTINEL, listDrives, auth, mimeOf }) {
+module.exports = function createWebdav({ resolveWithin, COMPUTER_ROOT, COMPUTER_SENTINEL, listDrives, auth, mimeOf, shouldSkipDir }) {
   // ---- 内存锁表（仅用于返回 lock-token，满足 Windows 客户端；不强制校验锁） ----
   const lockStore = new Map(); // abs -> token
 
@@ -183,6 +183,7 @@ module.exports = function createWebdav({ resolveWithin, COMPUTER_ROOT, COMPUTER_
       let entries = [];
       try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch (e) { return sendMulti(res, responses); }
       for (const e of entries) {
+        if (shouldSkipDir && shouldSkipDir(e.name)) continue; // 跳过系统保护目录
         const childAbs = path.join(abs, e.name);
         const childIsDir = e.isDirectory();
         const childDavSub = (sub ? sub + '/' : '') + e.name;

@@ -97,4 +97,17 @@ function safeName(name) {
   return String(name || '').replace(/[\\/:*?"<>|]/g, '_').trim();
 }
 
-module.exports = { resolveWithin, isSystemDrive, isSystemDriveRoot, getDrive, needSystemConfirm, safeName, COMPUTER_ROOT, COMPUTER_SENTINEL, HOME_ROOT, homePathFor };
+// ---- 遍历/列举时统一跳过的系统目录 ----
+// Windows 系统保护目录：普通用户无权限访问，体积大且遍历会卡住/报错，不纳入列表、搜索、统计。
+// - System Volume Information：系统还原/卷影副本，每个分区根目录下都有，无权限读取。
+// - 以 $ 开头的目录：$RECYCLE.BIN、$WINDOWS.~BT、$WinREAgent 等系统保留目录。
+const SKIP_DIR_NAMES = new Set(['system volume information']);
+function shouldSkipDir(name) {
+  const n = String(name || '');
+  if (!n) return false;
+  if (SKIP_DIR_NAMES.has(n.toLowerCase())) return true;
+  if (n.startsWith('$')) return true; // Windows 系统保护目录
+  return false;
+}
+
+module.exports = { resolveWithin, isSystemDrive, isSystemDriveRoot, getDrive, needSystemConfirm, safeName, shouldSkipDir, SKIP_DIR_NAMES, COMPUTER_ROOT, COMPUTER_SENTINEL, HOME_ROOT, homePathFor };

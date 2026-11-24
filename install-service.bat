@@ -1,19 +1,30 @@
 @echo off
-REM NasManager 注册为 Windows 服务（7x24 开机自启、崩溃自动重启）
-REM 需要同目录放置 nssm.exe（https://nssm.cc）
+chcp 65001 >nul 2>&1
+REM Register NasManager as a Windows service (needs nssm.exe in this directory).
 cd /d "%~dp0"
 if not exist "nssm.exe" (
-  echo 请将 nssm.exe 放到本目录后再运行此脚本。
-  echo 下载: https://nssm.cc/download
+  echo Please put nssm.exe in this directory. Download: https://nssm.cc
   pause & exit /b 1
 )
 if not exist ".env" copy ".env.example" ".env" >nul
-nssm install NasManager "%~dp0node.exe" "%~dp0server.js"
+set "NODE_EXE="
+for /f "delims=" %%i in ('where node 2^>nul') do if not defined NODE_EXE set "NODE_EXE=%%i"
+if not defined NODE_EXE if exist "%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-6\node.exe" set "NODE_EXE=%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-6\node.exe"
+if not defined NODE_EXE for /f "delims=" %%i in ('dir /b /s "%USERPROFILE%\.workbuddy\binaries\node\versions\node.exe" 2^>nul') do if not defined NODE_EXE set "NODE_EXE=%%i"
+if not defined NODE_EXE if exist "%ProgramFiles%\nodejs\node.exe" set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
+if not defined NODE_EXE if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODE_EXE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
+if not defined NODE_EXE if exist "%~dp0node.exe" set "NODE_EXE=%~dp0node.exe"
+if not defined NODE_EXE (
+  echo [ERROR] Node.js not found. Install Node 22 or put node.exe in PATH.
+  pause
+  exit /b 1
+)
+nssm install NasManager "%NODE_EXE%" "%~dp0server.js"
 nssm set NasManager AppDirectory "%~dp0"
 nssm set NasManager DisplayName "NasManager File Service"
-nssm set NasManager Description "类 NAS 文件管理服务：断点续传 / 回收站 / 系统盘守卫"
+nssm set NasManager Description "NAS-style file manager: resumable upload / recycle bin / drive guard"
 nssm set NasManager Start SERVICE_AUTO_START
 nssm set NasManager AppExit Default Restart
 nssm start NasManager
-echo NasManager 已注册并启动。可通过 services.msc 管理。
+echo NasManager service installed and started. Manage via services.msc.
 pause

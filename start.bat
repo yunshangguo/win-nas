@@ -1,7 +1,20 @@
 @echo off
-REM NasManager 免安装启动脚本（Portable 版）
+chcp 65001 >nul 2>&1
+REM NasManager portable launcher (ASCII-only for cmd.exe compatibility).
 cd /d "%~dp0"
 if not exist ".env" copy ".env.example" ".env" >nul
-echo 正在启动 NasManager ...
-node server.js
+set "NODE_EXE="
+for /f "delims=" %%i in ('where node 2^>nul') do if not defined NODE_EXE set "NODE_EXE=%%i"
+if not defined NODE_EXE if exist "%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-6\node.exe" set "NODE_EXE=%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-6\node.exe"
+if not defined NODE_EXE for /f "delims=" %%i in ('dir /b /s "%USERPROFILE%\.workbuddy\binaries\node\versions\node.exe" 2^>nul') do if not defined NODE_EXE set "NODE_EXE=%%i"
+if not defined NODE_EXE if exist "%ProgramFiles%\nodejs\node.exe" set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
+if not defined NODE_EXE if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODE_EXE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
+if not defined NODE_EXE if exist "%~dp0node.exe" set "NODE_EXE=%~dp0node.exe"
+if not defined NODE_EXE (
+  echo [ERROR] Node.js not found. Install Node 22 or put node.exe in PATH.
+  pause
+  exit /b 1
+)
+echo Starting NasManager ...
+"%NODE_EXE%" server.js
 pause

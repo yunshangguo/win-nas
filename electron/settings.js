@@ -1,6 +1,7 @@
 'use strict';
 (async () => {
   const $ = (id) => document.getElementById(id);
+  let autostartLoaded = false;
   try {
     const s = await window.nmSettings.get();
     $('port').value = s.port || 8080;
@@ -9,6 +10,16 @@
     $('roots').value = s.roots || '';
   } catch (e) {
     $('status').textContent = '读取设置失败：' + e.message;
+  }
+  // 开机自启状态单独读；读不到就不随保存提交，避免误关掉用户的自启
+  try {
+    const a = await window.nmSettings.getAutostart();
+    $('autostart').checked = !!(a && a.enabled);
+    $('exePath').textContent = (a && a.path) || '未知';
+    $('autostart').disabled = false;
+    autostartLoaded = true;
+  } catch (e) {
+    $('exePath').textContent = '读取失败：' + e.message;
   }
 
   $('save').addEventListener('click', async () => {
@@ -19,6 +30,7 @@
       dataDir: $('dataDir').value,
       roots: $('roots').value
     };
+    if (autostartLoaded) data.autostart = $('autostart').checked;
     if (!data.port || data.port < 1 || data.port > 65535) {
       $('status').textContent = '端口需在 1–65535 之间';
       return;

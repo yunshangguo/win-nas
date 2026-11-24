@@ -4,19 +4,41 @@
 // 这样在 NasManager 里删除的文件，和你在资源管理器里删除的文件进同一个回收站，可互相还原。
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
-const { ROOTS } = require('../config');
+const { execFile, execSync } = require('child_process');
+const { ROOTS, USER_HOME_BASE } = require('../config');
+const { COMPUTER_ROOT, HOME_ROOT } = require('./paths');
 
 const PS = process.env.SystemRoot
   ? path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   : 'powershell.exe';
 
-// 判断 abs 是否落在某个受管根目录内，并返回根 key 与相对路径
+// 判断 abs 是否落在某个受管根目录内，并返回根 key 与相对路径。
+// 支持三类来源：
+//  1) 静态 ROOTS 里配置的根目录；
+//  2) 个人主目录 USER_HOME_BASE（__home__）；
+//  3) “此电脑”下任意盘符路径（__computer__）——admin 从“此电脑”删 D:/I: 等盘的文件时命中。
+// 修复背景：本机 .env 的 ROOTS 为空，用户全部文件都在“此电脑”视图下访问，
+// 旧逻辑只认 ROOTS 导致所有删除都报 NOT_IN_ROOT（见 2026-11-19 任务记录）。
 function locateRoot(abs) {
+  if (!abs) return null;
+  const norm = path.resolve(abs);
+  // 1) 静态根
   for (const [k, r] of Object.entries(ROOTS)) {
-    const rel = path.relative(r, abs);
+    const rel = path.relative(r, norm);
     if (!rel.startsWith('..') && !path.isAbsolute(rel)) return { rootKey: k, rel };
   }
+  // 2) 个人主目录
+  if (USER_HOME_BASE) {
+    const rel = path.relative(path.resolve(USER_HOME_BASE), norm);
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) return { rootKey: '__home__', rel };
+  }
+  // 3) “此电脑”盘符路径：Windows 绝对路径（X:\...）视为受管，虚拟根 key = __computer__
+  if (/^[A-Za-z]:[\\/]/.test(norm)) {
+    const drive = norm.slice(0, 2).toUpperCase(); // 如 "D:"
+    return { rootKey: COMPUTER_ROOT, rel: path.join(drive, path.relative(drive + path.sep, norm)) };
+  }
+  // 非 Windows 绝对路径（如 /home/...）：允许作为此电脑根处理
+  if (norm.startsWith(path.sep)) return { rootKey: COMPUTER_ROOT, rel: norm };
   return null;
 }
 
@@ -95,32 +117,101 @@ async function doDelete(abs) {
   return { ok: true };
 }
 
+// ---- 回收站列举：直接解析各盘 $RECYCLE.BIN，不再依赖 Shell.Application COM ----
+// 背景（2026-11-19）：服务进程所在 session 里 New-Object -ComObject Shell.Application
+// 会超时/缓冲溢出（ETIMEDOUT / ENOBUFS），listScript 完全读不到回收站。改为直接读物理目录。
+// Windows 10+ 的 $I 元数据：偏移0=版本(u64,通常为2)，8=原大小(u64)，16=删除时间(FILETIME u64)，
+// 24=原路径字符数(u32)，28 起为 UTF-16LE 原完整路径（含文件名，null 结尾）。
+// 每个 $Ixxxx.ext 对应 $Rxxxx.ext（回收站里的实际内容）。
+function parseInfoFile(file) {
+  try {
+    const b = fs.readFileSync(file);
+    if (b.length < 28) return null;
+    const size = Number(b.readBigUInt64LE(8)) || 0;
+    const ft = b.readBigUInt64LE(16);
+    const deletedAt = Number(ft / 10000n) - 11644473600000; // FILETIME(100ns since 1601) -> Unix ms
+    let orig = b.slice(28).toString('utf16le').replace(/\0[\s\S]*$/, '');
+    if (!orig) return null;
+    return { size, deletedAt: isFinite(deletedAt) && deletedAt > 0 ? deletedAt : 0, orig };
+  } catch (e) { return null; }
+}
+
+function rootKeyFor(orig) {
+  for (const [k, r] of Object.entries(ROOTS)) {
+    if (orig && orig.toLowerCase().startsWith(String(r).toLowerCase())) return k;
+  }
+  try {
+    const home = USER_HOME_BASE ? path.resolve(USER_HOME_BASE) : '';
+    if (home && path.resolve(orig).toLowerCase().startsWith(home.toLowerCase() + path.sep)) return HOME_ROOT;
+  } catch (e) {}
+  if (orig && /^[A-Za-z]:[\\/]/.test(orig)) return COMPUTER_ROOT;
+  return '';
+}
+
+// 单个 SID 目录最多解析多少条（C 盘回收站实测有 33047 个 $I，全量解析会卡死服务）。
+// 只取最近 MAX_LIST 条：先按文件名 mtime 粗筛，避免读全部元数据。
+const MAX_LIST_PER_SID = 2000;
+
+function listBinDir(dir, items, seenIds) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch (e) { return; }
+  const nameSet = new Set(names); // 用集合判断 $R 是否存在，避免逐项 stat
+  const iNames = names.filter(n => n.startsWith('$I'));
+  // 条目过多时，按文件 mtime 倒序只解析最近的一批（$I 的 mtime ≈ 删除时间）。
+  // 关键：先一次性算出每个文件的 mtime（O(n) 次 stat），再排序；
+  // 绝不能在 sort 比较器里 stat（O(n log n)×2 次，C 盘 3.3 万项会卡 19 秒）。
+  if (iNames.length > MAX_LIST_PER_SID) {
+    const decorated = iNames.map(n => {
+      let m = 0;
+      try { m = fs.statSync(path.join(dir, n)).mtimeMs; } catch (e) {}
+      return { n, m };
+    });
+    decorated.sort((a, b) => b.m - a.m);
+    iNames.length = 0;
+    for (let i = 0; i < Math.min(MAX_LIST_PER_SID, decorated.length); i++) iNames.push(decorated[i].n);
+  }
+  for (const name of iNames) {
+    const meta = parseInfoFile(path.join(dir, name));
+    if (!meta) continue;
+    const rName = '$R' + name.slice(2);
+    if (!nameSet.has(rName)) continue; // 只有 $I 没有 $R：已被清理的残留元数据
+    const id = path.resolve(dir, rName);
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+    items.push({
+      id,
+      name: path.basename(meta.orig),
+      root: rootKeyFor(meta.orig),
+      originalPath: meta.orig,
+      deletedAt: meta.deletedAt,
+      size: meta.size
+    });
+  }
+}
+
 // 列举真实回收站中、原位置位于受管根目录下的条目（含其他来源，root 标记为空字符串）
 async function doList() {
-  let out;
-  try { out = await runPS(listScript(), { RB_ROOTS: Object.values(ROOTS).join('|') }); }
-  catch (e) { return []; }
   const items = [];
-  for (const line of out.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    const parts = line.split('|');
-    if (parts.length < 3) continue;
-    const [rpath, name, orig] = parts;
-    let rootKey = '';
-    for (const [k, r] of Object.entries(ROOTS)) {
-      if (orig && orig.toLowerCase().startsWith(r.toLowerCase())) { rootKey = k; break; }
+  const seenIds = new Set();
+  const roots = [];
+  if (process.platform === 'win32') {
+    // 直接遍历盘符找 $RECYCLE.BIN：不用 wmic（部分环境 wmic 已移除/会挂起），也不用 COM。
+    // 逐个盘符 existsSync 很快（不存在的盘立即返回 false），覆盖固定盘 + 移动盘。
+    for (const d of 'CDEFGHIJKLMNOPQRSTUVWXYZ') {
+      const p = d + ':\\$RECYCLE.BIN';
+      try { if (fs.existsSync(p)) roots.push(p); } catch (e) {}
     }
-    let deletedAtMs = 0;
-    try { const st = fs.statSync(rpath); deletedAtMs = st.birthtimeMs || st.ctimeMs || 0; } catch (e) {}
-    let size = 0;
-    try {
-      (function walk(x) {
-        let st; try { st = fs.statSync(x); } catch (e) { return; }
-        if (st.isDirectory()) { try { for (const d of fs.readdirSync(x)) walk(path.join(x, d)); } catch (e) {} }
-        else size += st.size;
-      })(rpath);
-    } catch (e) {}
-    items.push({ id: rpath, name, root: rootKey, originalPath: orig || '', deletedAt: deletedAtMs, size });
+  } else {
+    roots.push('/root/.local/share/Trash/files');
+  }
+  for (const binRoot of roots) {
+    let sids;
+    try { sids = fs.readdirSync(binRoot); } catch (e) { continue; }
+    for (const sid of sids) {
+      const sidDir = path.join(binRoot, sid);
+      try { if (!fs.statSync(sidDir).isDirectory()) continue; } catch (e) { continue; }
+      listBinDir(sidDir, items, seenIds);
+    }
   }
   items.sort((a, b) => b.deletedAt - a.deletedAt);
   return items;
@@ -129,7 +220,12 @@ async function doList() {
 // 还原：把回收站里的 $R 条目移回原始位置
 async function doRestore(binPath, originalPath, name) {
   if (!binPath) return { ok: false, error: 'MISSING_PATH' };
-  const full = originalPath ? path.join(originalPath, name) : name;
+  // originalPath（来自 $I 元数据）已是含文件名的完整原路径，不能再拼一次 name，
+  // 否则会还原成 "...\文件名\文件名"。仅在它不含文件名时才用 name 补全。
+  let full = originalPath || name || '';
+  if (full && name && path.basename(full) !== name && !fs.existsSync(path.dirname(full))) {
+    full = path.join(full, name);
+  }
   try {
     fs.mkdirSync(path.dirname(full), { recursive: true });
     try { fs.renameSync(binPath, full); }

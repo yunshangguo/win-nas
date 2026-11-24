@@ -21,6 +21,38 @@ const VIDEO_EXT = new Set(['.mp4', '.mkv', '.mov', '.avi', '.m4v', '.webm', '.wm
 let sharp = null;
 try { sharp = require('sharp'); } catch (e) { sharp = null; }
 
+// ffmpeg 探测（兼容三种运行方式，本机 PATH 无 ffmpeg）：
+//   ① 源码运行：ffmpeg-static 包自带的静态二进制（node_modules/ffmpeg-static/ffmpeg.exe）
+//   ② pkg 打包 EXE：ffmpeg.exe 放在 EXE 同目录（process.execPath 指向 NasManager.exe）
+//   ③ 兜底：系统 PATH 里的 ffmpeg
+// pkg 环境下 require('ffmpeg-static') 可能返回不存在的虚拟(snapshot)路径，existsSync 会过滤掉并自动落到 ②。
+function detectFfmpeg() {
+  // ① ffmpeg-static 包
+  try {
+    const ff = require('ffmpeg-static');
+    if (ff) {
+      // Electron asar 内的路径只是虚拟路径，CreateProcess 无法执行；
+      // electron-builder 已把 ffmpeg.exe 解包到 app.asar.unpacked，这里改指向真实文件。
+      const unpacked = String(ff).replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
+      if (unpacked !== ff && fs.existsSync(unpacked)) return unpacked;
+      if (fs.existsSync(ff)) return ff;
+    }
+  } catch (e) { /* 未安装或 pkg 虚拟路径无效 */ }
+  // ② EXE 同目录（pkg 打包，或便携版原始 EXE 所在文件夹）
+  try {
+    const dirs = [];
+    if (process.env.PORTABLE_EXECUTABLE_DIR) dirs.push(process.env.PORTABLE_EXECUTABLE_DIR);
+    dirs.push(path.dirname(process.execPath));
+    for (const d of dirs) {
+      const beside = path.join(d, 'ffmpeg.exe');
+      if (fs.existsSync(beside)) return beside;
+    }
+  } catch (e) {}
+  // ③ 系统 PATH
+  return 'ffmpeg';
+}
+const FFMPEG = detectFfmpeg();
+
 function extOf(p) { return path.extname(p).toLowerCase(); }
 
 // 以 rootKey + 子路径 作为缓存键，保证同文件跨会话命中且不与系统盘耦合
@@ -41,7 +73,7 @@ function extractVideoFrame(input, out) {
     const tryNext = () => {
       if (idx >= offsets.length) return resolve(false);
       const off = offsets[idx++];
-      execFile('ffmpeg', ['-y', '-ss', off, '-i', input, '-vframes', '1',
+      execFile(FFMPEG, ['-y', '-ss', off, '-i', input, '-vframes', '1',
         '-vf', 'scale=220:-1', '-q:v', '3', out],
         { windowsHide: true, timeout: 30000 }, (err) => {
           if (err) return tryNext();
@@ -122,4 +154,4 @@ function getThumbnailQueued(rootKey, sub, absPath) {
   return runThumb(() => getThumbnail(rootKey, sub, absPath));
 }
 
-module.exports = { getThumbnail: getThumbnailQueued, getThumbnailRaw: getThumbnail, hasSharp: !!sharp, IMAGE_EXT, VIDEO_EXT, setDataDir };
+module.exports = { getThumbnail: getThumbnailQueued, getThumbnailRaw: getThumbnail, hasSharp: !!sharp, hasFfmpeg: !!FFMPEG && FFMPEG !== 'ffmpeg', ffmpegPath: FFMPEG, IMAGE_EXT, VIDEO_EXT, setDataDir };
