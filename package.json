@@ -15,7 +15,7 @@
     "productName": "NasManager",
     "copyright": "Copyright © 2026 yunshangguo",
     "directories": { "output": "dist", "buildResources": "build" },
-    "asarUnpack": ["**/*.node"],
+    "asarUnpack": ["**/*.node", "**/ffmpeg.exe"],
     "files": [
       "package.json",
       "server.js",
